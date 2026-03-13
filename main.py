@@ -31,8 +31,21 @@ from PyQt6.QtGui import (
 )
 
 # ── VERSION ──────────────────────────────────────────────────────────────────
-VERSION = "1.0.0"
 GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
+
+def _local_commit_sha():
+    """Return the current git commit SHA, or None if not in a git repo."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        sha = result.stdout.strip()
+        return sha if len(sha) == 40 else None
+    except Exception:
+        return None
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000
@@ -178,18 +191,21 @@ class WhisperLoader(QThread):
 
 # ── UPDATE CHECKER ───────────────────────────────────────────────────────────
 class UpdateChecker(QThread):
-    update_available = pyqtSignal(str)  # emits latest version string
+    update_available = pyqtSignal(str)  # emits remote short SHA
 
     def run(self):
+        local_sha = _local_commit_sha()
+        if not local_sha:
+            return  # not a git install, skip check
         try:
             import urllib.request, json as _json
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
             req = urllib.request.Request(url, headers={"User-Agent": "PandAI-Assistant"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = _json.loads(resp.read())
-            latest = data.get("tag_name", "").lstrip("v")
-            if latest and latest != VERSION:
-                self.update_available.emit(latest)
+            remote_sha = data.get("sha", "")
+            if remote_sha and remote_sha != local_sha:
+                self.update_available.emit(remote_sha[:7])
         except Exception:
             pass  # silently ignore — no network, rate limit, etc.
 
@@ -1062,11 +1078,11 @@ class OverlayWindow(QWidget):
         self._update_checker.update_available.connect(self._on_update_available)
         self._update_checker.start()
 
-    def _on_update_available(self, latest: str):
-        url = f"https://github.com/{GITHUB_REPO}/releases/latest"
+    def _on_update_available(self, remote_sha: str):
+        url = f"https://github.com/{GITHUB_REPO}"
         self.update_banner.setText(
-            f'⬆  Update available: v{latest} — '
-            f'<a href="{url}">Download</a>'
+            f'⬆  Update available ({remote_sha}) — '
+            f'<a href="{url}">Get latest on GitHub</a>'
         )
         self.update_banner.show()
 
