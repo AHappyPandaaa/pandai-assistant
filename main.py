@@ -500,7 +500,7 @@ class OverlayWindow(QWidget):
         self.full_transcript = ""
         self._last_suggestion_data = None
         self._drag_pos    = None
-        self._opacity_val = 0.92
+        self._opacity_val = 1.0
 
         self._setup_window()
         self._build_ui()
@@ -595,7 +595,7 @@ class OverlayWindow(QWidget):
 
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(20, 100)
-        self.opacity_slider.setValue(92)
+        self.opacity_slider.setValue(100)
         self.opacity_slider.setFixedWidth(70)
         self.opacity_slider.setToolTip("Opacity")
         self.opacity_slider.valueChanged.connect(self._set_opacity)
