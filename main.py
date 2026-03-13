@@ -30,23 +30,6 @@ from PyQt6.QtGui import (
     QLinearGradient, QPalette, QCursor, QIcon
 )
 
-# ── VERSION ──────────────────────────────────────────────────────────────────
-GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
-
-def _local_commit_sha():
-    """Return the current git commit SHA, or None if not in a git repo."""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=3,
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
-        sha = result.stdout.strip()
-        return sha if len(sha) == 40 else None
-    except Exception:
-        return None
-
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000
 WINDOW_SECONDS = 8     # longer window = more context = fewer wrong words
@@ -188,47 +171,6 @@ class WhisperLoader(QThread):
             self.done.emit(None, str(e))
         except Exception as e2:
             self.done.emit(None, str(e2))
-
-# ── UPDATE CHECKER ───────────────────────────────────────────────────────────
-class UpdateChecker(QThread):
-    update_available = pyqtSignal(str)  # emits remote short SHA
-
-    def run(self):
-        local_sha = _local_commit_sha()
-        if not local_sha:
-            return  # not a git install, skip check
-        try:
-            import urllib.request, json as _json
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
-            req = urllib.request.Request(url, headers={"User-Agent": "PandAI-Assistant"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read())
-            remote_sha = data.get("sha", "")
-            if remote_sha and remote_sha != local_sha:
-                self.update_available.emit(remote_sha[:7])
-        except Exception:
-            pass  # silently ignore — no network, rate limit, etc.
-
-# ── AUTO UPDATER ──────────────────────────────────────────────────────────────
-class AutoUpdater(QThread):
-    """Runs `git pull` in the app directory and reports success/failure."""
-    finished = pyqtSignal(bool, str)  # (success, message)
-
-    def run(self):
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["git", "pull"],
-                capture_output=True, text=True, timeout=60,
-                cwd=os.path.dirname(os.path.abspath(__file__))
-            )
-            if result.returncode == 0:
-                self.finished.emit(True, "Update complete! Restart to apply.")
-            else:
-                msg = (result.stderr.strip() or result.stdout.strip() or "unknown error")
-                self.finished.emit(False, f"git pull failed: {msg}")
-        except Exception as e:
-            self.finished.emit(False, f"Update failed: {e}")
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_device_native_rate(device_idx):
@@ -558,7 +500,7 @@ class OverlayWindow(QWidget):
         self.full_transcript = ""
         self._last_suggestion_data = None
         self._drag_pos    = None
-        self._opacity_val = 1.0
+        self._opacity_val = 0.92
 
         self._setup_window()
         self._build_ui()
@@ -653,7 +595,7 @@ class OverlayWindow(QWidget):
 
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(20, 100)
-        self.opacity_slider.setValue(100)
+        self.opacity_slider.setValue(92)
         self.opacity_slider.setFixedWidth(70)
         self.opacity_slider.setToolTip("Opacity")
         self.opacity_slider.valueChanged.connect(self._set_opacity)
@@ -672,24 +614,6 @@ class OverlayWindow(QWidget):
         self.whisper_banner.setWordWrap(True)
         self.whisper_banner.setContentsMargins(12, 6, 12, 6)
         card_layout.addWidget(self.whisper_banner)
-
-        # ── Update available banner (hidden until needed)
-        self.update_banner = QFrame()
-        self.update_banner.setObjectName("banner_update_frame")
-        _ub_row = QHBoxLayout(self.update_banner)
-        _ub_row.setContentsMargins(12, 4, 8, 4)
-        _ub_row.setSpacing(8)
-        self._update_banner_label = QLabel("")
-        self._update_banner_label.setObjectName("banner_update_label")
-        self._update_banner_label.setWordWrap(True)
-        self._update_now_btn = QPushButton("Update Now")
-        self._update_now_btn.setObjectName("update_now_btn")
-        self._update_now_btn.setFixedWidth(90)
-        self._update_now_btn.clicked.connect(self._do_update)
-        _ub_row.addWidget(self._update_banner_label, 1)
-        _ub_row.addWidget(self._update_now_btn)
-        self.update_banner.hide()
-        card_layout.addWidget(self.update_banner)
 
         # ── Transcript
         t_frame = QFrame()
@@ -1012,21 +936,6 @@ class OverlayWindow(QWidget):
                 color: #fca5a5; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
-            #banner_update_frame {{
-                background: rgba(124,58,237,20);
-                border-bottom: 1px solid rgba(124,58,237,60);
-            }}
-            #banner_update_label {{
-                color: #c4b5fd; font-size: 9pt;
-            }}
-            #update_now_btn {{
-                background: rgba(124,58,237,180);
-                color: white; font-size: 8pt; font-weight: bold;
-                border: 1px solid rgba(124,58,237,200);
-                border-radius: 4px; padding: 3px 8px;
-            }}
-            #update_now_btn:hover {{ background: rgba(124,58,237,220); }}
-            #update_now_btn:disabled {{ background: rgba(124,58,237,80); color: rgba(255,255,255,120); }}
 
             #section_frame {{ background: transparent; }}
 
@@ -1112,44 +1021,6 @@ class OverlayWindow(QWidget):
             self.whisper_banner.setText(msg) or self._apply_styles()
         ))
         self.loader.start()
-
-        self._update_checker = UpdateChecker()
-        self._update_checker.update_available.connect(self._on_update_available)
-        self._update_checker.start()
-
-    def _on_update_available(self, remote_sha: str):
-        self._update_banner_label.setText(f'⬆  Update available ({remote_sha})')
-        self.update_banner.show()
-        self._apply_styles()
-
-    def _do_update(self):
-        self._update_now_btn.setEnabled(False)
-        self._update_banner_label.setText("⏳  Downloading update...")
-        self._auto_updater = AutoUpdater()
-        self._auto_updater.finished.connect(self._on_update_done)
-        self._auto_updater.start()
-
-    def _on_update_done(self, success: bool, message: str):
-        if success:
-            self._update_banner_label.setText(f"✓  {message}")
-            self._update_now_btn.setText("Restart")
-            self._update_now_btn.setEnabled(True)
-            self._update_now_btn.clicked.disconnect()
-            self._update_now_btn.clicked.connect(self._restart_app)
-        else:
-            self._update_banner_label.setText(f"✗  {message}")
-            self._update_now_btn.setText("Retry")
-            self._update_now_btn.setEnabled(True)
-
-    def _restart_app(self):
-        python = sys.executable
-        if sys.platform == "win32":
-            pythonw = os.path.join(os.path.dirname(python), "pythonw.exe")
-            if os.path.exists(pythonw):
-                python = pythonw
-        import subprocess
-        subprocess.Popen([python] + sys.argv)
-        QApplication.quit()
 
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
@@ -1615,14 +1486,6 @@ def _write_crash_log(exc_type, exc_value, exc_tb):
         pass
 
 if __name__ == "__main__":
-    # On Windows, re-launch with pythonw.exe to suppress the console window
-    if sys.platform == "win32" and os.path.basename(sys.executable).lower() == "python.exe":
-        _pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if os.path.exists(_pythonw):
-            import subprocess
-            subprocess.Popen([_pythonw] + sys.argv)
-            sys.exit(0)
-
     sys.excepthook = _write_crash_log
 
     app = QApplication(sys.argv)
