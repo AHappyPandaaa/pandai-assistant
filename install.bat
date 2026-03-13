@@ -48,7 +48,7 @@ set PY=py -3.11
 
 echo [1/4] Installing core dependencies...
 %PY% -m pip install -q --upgrade pip
-%PY% -m pip install -q PyQt6 anthropic sounddevice numpy scipy faster-whisper
+%PY% -m pip install -q PyQt6 anthropic sounddevice numpy scipy faster-whisper keyboard
 if errorlevel 1 (
     echo ERROR: Failed to install core dependencies.
     pause
@@ -71,15 +71,39 @@ if errorlevel 1 (
 
 echo [4/4] Creating desktop shortcut...
 set SCRIPT_DIR=%~dp0
-echo @echo off > "%USERPROFILE%\Desktop\PandAI Assistant.bat"
-echo cd /d "%SCRIPT_DIR%" >> "%USERPROFILE%\Desktop\PandAI Assistant.bat"
-echo py -3.11 "%SCRIPT_DIR%main.py" >> "%USERPROFILE%\Desktop\PandAI Assistant.bat"
+
+:: Find pythonw.exe path (suppresses console window on launch)
+for /f "tokens=*" %%i in ('%PY% -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable),\"pythonw.exe\"))"') do set PYTHONW=%%i
+
+:: Create a proper .lnk shortcut using PowerShell
+powershell -NoProfile -Command ^
+    "$ws = New-Object -ComObject WScript.Shell;" ^
+    "$sc = $ws.CreateShortcut('%USERPROFILE%\Desktop\PandAI Assistant.lnk');" ^
+    "$sc.TargetPath = '%PYTHONW%';" ^
+    "$sc.Arguments = '\"%SCRIPT_DIR%main.py\"';" ^
+    "$sc.WorkingDirectory = '%SCRIPT_DIR%';" ^
+    "$sc.IconLocation = '%PYTHONW%,0';" ^
+    "$sc.Description = 'PandAI Assistant - Real-time AI conversation helper';" ^
+    "$sc.Save()"
+
+if errorlevel 1 (
+    echo WARNING: Could not create .lnk shortcut - falling back to .bat shortcut.
+    echo @echo off > "%USERPROFILE%\Desktop\PandAI Assistant.bat"
+    echo cd /d "%SCRIPT_DIR%" >> "%USERPROFILE%\Desktop\PandAI Assistant.bat"
+    echo py -3.11 "%SCRIPT_DIR%main.py" >> "%USERPROFILE%\Desktop\PandAI Assistant.bat"
+)
 
 echo.
 echo ============================================
 echo  Setup complete!
-echo  Double-click "PandAI Assistant" on Desktop
-echo  to launch the app.
+echo.
+echo  A "PandAI Assistant" shortcut has been
+echo  placed on your Desktop.
+echo.
+echo  IMPORTANT - For system audio capture:
+echo  VB-Cable (free) must be installed.
+echo  Download: https://vb-audio.com/Cable/
+echo  See HOW_TO_INSTALL.txt for setup steps.
 echo ============================================
 echo.
 pause

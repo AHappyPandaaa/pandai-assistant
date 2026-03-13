@@ -55,7 +55,8 @@ STEP_SECONDS   = 3     # step forward every N seconds (balance speed vs repetiti
 WHISPER_MODEL  = "medium"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
+CONFIG_FILE  = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
+HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".pandai_history.json")
 
 MODES = ["general", "interview", "technical", "sales", "casual"]
 MODE_LABELS = {
@@ -109,6 +110,22 @@ def save_config(cfg):
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+def load_history():
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_history(entries):
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(entries[-100:], f, indent=2)
     except Exception:
         pass
 
@@ -290,6 +307,7 @@ class AudioCapture(QThread):
     """
     mic_chunk_ready = pyqtSignal(np.ndarray)  # float32 mono at SAMPLE_RATE — mic source
     sys_chunk_ready = pyqtSignal(np.ndarray)  # float32 mono at SAMPLE_RATE — system source
+    level_changed   = pyqtSignal(float)        # 0.0–1.0 mic RMS level for VU meter
 
     def __init__(self, mic_idx=None, sys_idx=None):
         super().__init__()
@@ -303,6 +321,7 @@ class AudioCapture(QThread):
         self._sys_rate = get_device_native_rate(sys_idx) if sys_idx is not None else SAMPLE_RATE
         # Timer fires every STEP_SECONDS to emit a window
         self._last_emit = 0.0
+        self._last_level_emit = 0.0
 
     def stop(self):
         self._stop.set()
@@ -318,6 +337,12 @@ class AudioCapture(QThread):
                     max_samples = self._mic_rate * (WINDOW_SECONDS + 1)
                     if len(self._ring_mic) > max_samples:
                         self._ring_mic = self._ring_mic[-max_samples:]
+                # Throttled level emission (~10 fps) for VU meter
+                now = time.time()
+                if now - self._last_level_emit >= 0.1:
+                    rms = float(np.sqrt(np.mean(mono ** 2)))
+                    self.level_changed.emit(min(1.0, rms * 10))
+                    self._last_level_emit = now
 
             def sys_cb(indata, frames, time_info, status):
                 mono = indata[:, 0].copy()
@@ -375,6 +400,30 @@ class AudioCapture(QThread):
             self.mic_chunk_ready.emit(mic_chunk)
         if sys_chunk is not None:
             self.sys_chunk_ready.emit(sys_chunk)
+
+# ── LEVEL METER WIDGET ───────────────────────────────────────────────────────
+class LevelMeter(QWidget):
+    """Mini VU-style bar meter showing mic input level (8 segments, green→red)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._level = 0.0
+        self.setFixedSize(64, 14)
+
+    def set_level(self, level: float):
+        self._level = max(0.0, min(1.0, level))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        n, bar_w, gap, bar_h = 8, 5, 2, 10
+        for i in range(n):
+            threshold = (i + 1) / n
+            if self._level >= threshold:
+                color = QColor("#10b981") if i < 5 else (QColor("#f59e0b") if i < 7 else QColor("#ef4444"))
+            else:
+                color = QColor(50, 55, 65)
+            painter.fillRect(i * (bar_w + gap), 2, bar_w, bar_h, color)
 
 # ── TRANSCRIPTION THREAD ─────────────────────────────────────────────────────
 class TranscribeWorker(QThread):
@@ -623,7 +672,7 @@ class SettingsDialog(QDialog):
         hotkey_layout.addWidget(self.hotkey_input)
         hotkey_layout.addWidget(hotkey_hint)
         # Show hotkey registration status from parent window
-        hotkey_err = getattr(parent, "_hotkey_error", None) if parent else None
+        hotkey_err = getattr(self.parent(), "_hotkey_error", None) if self.parent() else None
         if hotkey_err:
             hotkey_status = QLabel(f"⚠  Hotkey error: {hotkey_err}")
             hotkey_status.setStyleSheet("color: #f87171; font-size: 9pt;")
@@ -826,6 +875,8 @@ class OverlayWindow(QWidget):
         self._last_suggestion_data = None
         self._drag_pos    = None
         self._export_entries = []   # list of suggestion dicts for session export
+        self._saved_history  = load_history()  # persisted across sessions
+        self._paused = False
         self._briefing = ""           # pre-session context fed to Claude
         self._display_transcript = "" # labelled transcript for the UI box
         # Per-source dedup state for speaker labels
@@ -836,12 +887,14 @@ class OverlayWindow(QWidget):
             self._toggle_visibility, Qt.ConnectionType.QueuedConnection
         )
         self._hotkey_error = None
+        self._hotkey_handle = None
         self._register_hotkey()
         self._opacity_val = 1.0
         self._theme = self.config.get("theme", "dark")
 
         self._setup_window()
         self._build_ui()
+        self._load_saved_history()
         self._apply_styles()
         self._set_opacity(int(self._opacity_val * 100))
         self._load_whisper()
@@ -939,6 +992,16 @@ class OverlayWindow(QWidget):
         self.rec_btn.setFixedHeight(28)
         self.rec_btn.clicked.connect(self._toggle_recording)
 
+        self.pause_btn = QPushButton("⏸  Pause")
+        self.pause_btn.setObjectName("pause_btn")
+        self.pause_btn.setFixedHeight(28)
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        self.pause_btn.hide()
+
+        self.level_meter = LevelMeter()
+        self.level_meter.setToolTip("Mic input level")
+        self.level_meter.hide()
+
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(20, 100)
         self.opacity_slider.setValue(100)
@@ -947,6 +1010,9 @@ class OverlayWindow(QWidget):
         self.opacity_slider.valueChanged.connect(self._set_opacity)
 
         row1.addWidget(self.rec_btn)
+        row1.addWidget(self.pause_btn)
+        row1.addSpacing(6)
+        row1.addWidget(self.level_meter)
         row1.addStretch()
         row1.addWidget(QLabel("◑"))
         row1.addWidget(self.opacity_slider)
@@ -1125,16 +1191,45 @@ class OverlayWindow(QWidget):
         lbl.setContentsMargins(12, 24, 12, 24)
         return lbl
 
-    def _add_history_entry(self, data: dict, snippet: str):
+    def _load_saved_history(self):
+        """Populate history tab with entries persisted from previous sessions."""
+        if not self._saved_history:
+            return
+        # Show a divider so users know these are past sessions
+        divider = QLabel("— Previous Sessions —")
+        divider.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        divider.setStyleSheet("color: #475569; font-size: 8pt; padding: 4px 0;")
+        insert_pos = max(0, self.history_layout.count() - 1)
+        self.history_layout.insertWidget(insert_pos, divider)
+        # Remove placeholder if present
+        if self.history_layout.count() > 0:
+            first = self.history_layout.itemAt(0).widget()
+            if first and first.objectName() == "placeholder_text":
+                self.history_layout.removeWidget(first)
+                first.deleteLater()
+        for entry in self._saved_history[-20:]:
+            data = {
+                "response":  entry.get("response", ""),
+                "topics":    entry.get("topics", []),
+                "followups": entry.get("followups", []),
+            }
+            self._add_history_entry(data, entry.get("snippet", ""),
+                                    time_str=entry.get("time", ""), persist=False)
+
+    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
         """Add a collapsed history card for a past suggestion."""
         import datetime
-        self._export_entries.append({
-            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+        entry = {
+            "time": time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "snippet": snippet,
             "response": data.get("response", ""),
             "topics": data.get("topics", []),
             "followups": data.get("followups", []),
-        })
+        }
+        self._export_entries.append(entry)
+        if persist:
+            self._saved_history.append(entry)
+            save_history(self._saved_history)
         # Remove placeholder if present
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
@@ -1350,6 +1445,14 @@ class OverlayWindow(QWidget):
                 border-color: rgba(239,68,68,120);
                 color: #fca5a5;
             }}
+
+            #pause_btn {{
+                background: {c_input};
+                border: 1px solid {b_input};
+                border-radius: 8px; color: {t_second};
+                font-size: 9pt; font-weight: 600; padding: 0 10px;
+            }}
+            #pause_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
 
             #device_combo {{
                 background: {c_input};
@@ -1600,6 +1703,7 @@ class OverlayWindow(QWidget):
         self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
         self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
         self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
+        self.capture.level_changed.connect(self.level_meter.set_level)
         self.capture.start()
 
         self.rec_btn.setText("■  Stop Listening")
@@ -1608,16 +1712,55 @@ class OverlayWindow(QWidget):
         self.status_dot.setObjectName("dot_active")
         self.status_dot.setStyle(self.status_dot.style())
         self.transcript_box.setPlaceholderText("Listening — updating every 2s...")
+        self.pause_btn.setText("⏸  Pause")
+        self.pause_btn.show()
+        self.level_meter.show()
 
     def _stop_recording(self):
         if self.capture:
             self.capture.stop()
             self.capture = None
+        self._paused = False
         self.rec_btn.setText("▶  Start Listening")
         self.rec_btn.setProperty("recording", False)
         self.rec_btn.setStyle(self.rec_btn.style())
         self.status_dot.setObjectName("dot_inactive")
         self.status_dot.setStyle(self.status_dot.style())
+        self.pause_btn.hide()
+        self.level_meter.set_level(0.0)
+        self.level_meter.hide()
+
+    def _toggle_pause(self):
+        if self._paused:
+            self._resume_recording()
+        else:
+            self._pause_recording()
+
+    def _pause_recording(self):
+        if self.capture:
+            self.capture.stop()
+            self.capture = None
+        self._paused = True
+        self.pause_btn.setText("▶  Resume")
+        self.level_meter.set_level(0.0)
+        self.status_dot.setObjectName("dot_inactive")
+        self.status_dot.setStyle(self.status_dot.style())
+        self.transcript_box.setPlaceholderText("Paused — session context preserved. Click Resume to continue.")
+
+    def _resume_recording(self):
+        self._paused = False
+        capture_mode = self.config.get("capture_mode", "both")
+        mic_idx = self.config.get("mic_device") if capture_mode != "inbound" else None
+        sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
+        self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
+        self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
+        self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
+        self.capture.level_changed.connect(self.level_meter.set_level)
+        self.capture.start()
+        self.pause_btn.setText("⏸  Pause")
+        self.status_dot.setObjectName("dot_active")
+        self.status_dot.setStyle(self.status_dot.style())
+        self.transcript_box.setPlaceholderText("Listening — updating every 2s...")
 
     def _on_audio_chunk(self, audio: np.ndarray, source: str = "mic"):
         if not self.whisper:
@@ -1894,8 +2037,8 @@ class OverlayWindow(QWidget):
 
     # ── CLEAR SESSION ─────────────────────────────────────────────────────────
     def _clear_session(self):
-        # Stop recording if active
-        was_recording = self.capture is not None
+        # Stop recording if active (also handles paused state)
+        was_recording = self.capture is not None or self._paused
         if was_recording:
             self._stop_recording()
 
@@ -2031,9 +2174,13 @@ class OverlayWindow(QWidget):
     def _register_hotkey(self):
         try:
             import keyboard
-            keyboard.unhook_all_hotkeys()
+            if self._hotkey_handle is not None:
+                try:
+                    keyboard.remove_hotkey(self._hotkey_handle)
+                except Exception:
+                    pass
             hotkey = self.config.get("hotkey", "ctrl+shift+space")
-            keyboard.add_hotkey(hotkey, self._hotkey_signaler.triggered.emit)
+            self._hotkey_handle = keyboard.add_hotkey(hotkey, self._hotkey_signaler.triggered.emit)
             self._hotkey_error = None
         except Exception as e:
             self._hotkey_error = str(e)
@@ -2119,6 +2266,27 @@ class OverlayWindow(QWidget):
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
+def _is_admin():
+    """Return True if the current process has admin/elevated privileges."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def _relaunch_as_admin():
+    """Trigger a UAC prompt and relaunch this script elevated.
+    Returns True if the elevated process was launched (caller should exit).
+    Returns False if the user denied the prompt or it failed."""
+    import ctypes
+    exe = sys.executable
+    pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.exists(pythonw):
+        exe = pythonw  # suppress console in the elevated process too
+    script = os.path.abspath(sys.argv[0])
+    ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, f'"{script}"', None, 1)
+    return ret > 32  # > 32 = success; <= 32 = denied or error
+
 def _write_crash_log(exc_type, exc_value, exc_tb):
     import traceback, datetime
     log_path = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
@@ -2142,13 +2310,19 @@ def _write_crash_log(exc_type, exc_value, exc_tb):
         pass
 
 if __name__ == "__main__":
-    # On Windows, re-launch with pythonw.exe to suppress the console window
-    if sys.platform == "win32" and os.path.basename(sys.executable).lower() == "python.exe":
-        _pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if os.path.exists(_pythonw):
-            import subprocess
-            subprocess.Popen([_pythonw] + sys.argv)
-            sys.exit(0)
+    if sys.platform == "win32":
+        # Request admin elevation — needed for global hotkey (keyboard library)
+        if not _is_admin():
+            if _relaunch_as_admin():
+                sys.exit(0)
+            # User denied UAC — continue anyway; hotkey warning will show in Settings
+        # Suppress the console window by re-launching with pythonw.exe
+        elif os.path.basename(sys.executable).lower() == "python.exe":
+            _pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            if os.path.exists(_pythonw):
+                import subprocess
+                subprocess.Popen([_pythonw] + sys.argv)
+                sys.exit(0)
 
     sys.excepthook = _write_crash_log
 
