@@ -35,7 +35,7 @@ GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
 
 # Fallback version used when running as a compiled .exe (no .git directory).
 # Update this to the current commit SHA each time you build and distribute a new exe.
-APP_VERSION = "8be2a46589bc42d32a452c8fb8e04b8cc148bbfb"
+APP_VERSION = "263171bf546e2100c25bb1a2d3ee4e423ed65f8c"
 
 def _local_commit_sha():
     """Return the current git commit SHA, or APP_VERSION fallback (for compiled exes)."""
