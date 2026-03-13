@@ -431,7 +431,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 430)
+        self.setFixedSize(500, 490)
         self.setStyleSheet("""
             QDialog { background: #0d0e12; color: #e2e8f0; font-family: Segoe UI; }
             QLabel { color: #94a3b8; font-size: 10pt; }
@@ -462,6 +462,16 @@ class SettingsDialog(QDialog):
                 border: 1px solid rgba(255,255,255,0.07);
                 border-radius: 8px; margin-top: 8px; padding: 12px;
                 color: #64748b; font-size: 9pt;
+            }
+            QCheckBox { color: #e2e8f0; font-size: 10pt; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;
+                background: #1e2029;
+            }
+            QCheckBox::indicator:checked {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
+                border-color: transparent;
             }
         """)
         self._build_ui()
@@ -531,6 +541,18 @@ class SettingsDialog(QDialog):
         dev_layout.addWidget(hint2, 3, 0, 1, 2)
         layout.addWidget(dev_group)
 
+        # Privacy
+        priv_group = QGroupBox("Privacy")
+        priv_layout = QVBoxLayout(priv_group)
+        self.stealth_check = QCheckBox("Stealth mode — hide from screen sharing")
+        self.stealth_check.setChecked(self.config.get("stealth_mode", False))
+        stealth_hint = QLabel("Window stays visible to you but won't appear in screen captures or recordings (Windows 10 2004+)")
+        stealth_hint.setStyleSheet("color: #475569; font-size: 9pt;")
+        stealth_hint.setWordWrap(True)
+        priv_layout.addWidget(self.stealth_check)
+        priv_layout.addWidget(stealth_hint)
+        layout.addWidget(priv_group)
+
         # Buttons
         btn_row = QHBoxLayout()
         cancel = QPushButton("Cancel")
@@ -547,6 +569,7 @@ class SettingsDialog(QDialog):
         self.config["mic_device"]   = self.mic_combo.currentData()
         self.config["sys_device"]   = self.sys_combo.currentData()
         self.config["capture_mode"] = self.capture_mode_combo.currentData()
+        self.config["stealth_mode"] = self.stealth_check.isChecked()
         self.accept()
 
     def get_config(self):
@@ -570,6 +593,7 @@ class OverlayWindow(QWidget):
         self._setup_window()
         self._build_ui()
         self._apply_styles()
+        self._set_opacity(int(self._opacity_val * 100))
         self._load_whisper()
 
     # ── WINDOW SETUP ──────────────────────────────────────────────────────────
@@ -1553,6 +1577,22 @@ class OverlayWindow(QWidget):
         if dlg.exec():
             self.config = dlg.get_config()
             save_config(self.config)
+            self._apply_stealth_mode(self.config.get("stealth_mode", False))
+
+    # ── STEALTH MODE ──────────────────────────────────────────────────────────
+    def _apply_stealth_mode(self, enabled: bool):
+        """Hide the window from screen capture using Windows display affinity."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            WDA_NONE               = 0x00000000
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            hwnd = int(self.winId())
+            affinity = WDA_EXCLUDEFROMCAPTURE if enabled else WDA_NONE
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+        except Exception:
+            pass
 
     # ── OPACITY ───────────────────────────────────────────────────────────────
     def _set_opacity(self, val):
@@ -1638,4 +1678,5 @@ if __name__ == "__main__":
 
     window = OverlayWindow()
     window.show()
+    window._apply_stealth_mode(window.config.get("stealth_mode", False))
     sys.exit(app.exec())
