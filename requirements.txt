@@ -5,6 +5,7 @@ faster-whisper>=1.0.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 scipy>=1.10.0
+keyboard>=0.13.5
 
 # CUDA support for faster-whisper (install manually if needed):
 # pip install nvidia-cublas-cu12 nvidia-cudnn-cu12

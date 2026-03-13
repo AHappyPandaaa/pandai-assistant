@@ -23,12 +23,18 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QTabWidget, QCheckBox
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve
+    Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve,
+    QObject
 )
 from PyQt6.QtGui import (
     QColor, QPainter, QBrush, QPen, QFont, QFontDatabase,
     QLinearGradient, QPalette, QCursor, QIcon
 )
+
+# ── HOTKEY SIGNALER ───────────────────────────────────────────────────────────
+class _HotkeySignaler(QObject):
+    """Bridges the keyboard library's background thread into Qt's main thread."""
+    triggered = pyqtSignal()
 
 # ── VERSION ──────────────────────────────────────────────────────────────────
 GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
@@ -439,7 +445,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 490)
+        self.setFixedSize(500, 570)
         self.setStyleSheet("""
             QDialog { background: #0d0e12; color: #e2e8f0; font-family: Segoe UI; }
             QLabel { color: #94a3b8; font-size: 10pt; }
@@ -549,6 +555,18 @@ class SettingsDialog(QDialog):
         dev_layout.addWidget(hint2, 3, 0, 1, 2)
         layout.addWidget(dev_group)
 
+        # Hotkey
+        hotkey_group = QGroupBox("Keyboard Shortcut")
+        hotkey_layout = QVBoxLayout(hotkey_group)
+        self.hotkey_input = QLineEdit(self.config.get("hotkey", "ctrl+shift+space"))
+        self.hotkey_input.setPlaceholderText("e.g. ctrl+shift+space")
+        hotkey_hint = QLabel("Global hotkey to show/hide the overlay (uses the 'keyboard' library syntax)")
+        hotkey_hint.setStyleSheet("color: #475569; font-size: 9pt;")
+        hotkey_hint.setWordWrap(True)
+        hotkey_layout.addWidget(self.hotkey_input)
+        hotkey_layout.addWidget(hotkey_hint)
+        layout.addWidget(hotkey_group)
+
         # Privacy
         priv_group = QGroupBox("Privacy")
         priv_layout = QVBoxLayout(priv_group)
@@ -577,6 +595,7 @@ class SettingsDialog(QDialog):
         self.config["mic_device"]   = self.mic_combo.currentData()
         self.config["sys_device"]   = self.sys_combo.currentData()
         self.config["capture_mode"] = self.capture_mode_combo.currentData()
+        self.config["hotkey"]       = self.hotkey_input.text().strip() or "ctrl+shift+space"
         self.config["stealth_mode"] = self.stealth_check.isChecked()
         self.accept()
 
@@ -596,6 +615,10 @@ class OverlayWindow(QWidget):
         self.full_transcript = ""
         self._last_suggestion_data = None
         self._drag_pos    = None
+        self._export_entries = []   # list of suggestion dicts for session export
+        self._hotkey_signaler = _HotkeySignaler()
+        self._hotkey_signaler.triggered.connect(self._toggle_visibility)
+        self._register_hotkey()
         self._opacity_val = 1.0
 
         self._setup_window()
@@ -663,6 +686,12 @@ class OverlayWindow(QWidget):
         clear_btn.setToolTip("Clear session — wipes transcript and suggestions")
         clear_btn.clicked.connect(self._clear_session)
 
+        self.export_btn = QPushButton("↓")
+        self.export_btn.setObjectName("icon_btn")
+        self.export_btn.setFixedSize(26, 26)
+        self.export_btn.setToolTip("Export session transcript and suggestions to .txt")
+        self.export_btn.clicked.connect(self._export_session)
+
         hide_btn = QPushButton("✕")
         hide_btn.setObjectName("icon_btn")
         hide_btn.setFixedSize(26, 26)
@@ -673,6 +702,7 @@ class OverlayWindow(QWidget):
         hl.addStretch()
         hl.addWidget(self.mode_btn)
         hl.addWidget(clear_btn)
+        hl.addWidget(self.export_btn)
         hl.addWidget(settings_btn)
         hl.addWidget(hide_btn)
         card_layout.addWidget(header)
@@ -852,6 +882,14 @@ class OverlayWindow(QWidget):
 
     def _add_history_entry(self, data: dict, snippet: str):
         """Add a collapsed history card for a past suggestion."""
+        import datetime
+        self._export_entries.append({
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "snippet": snippet,
+            "response": data.get("response", ""),
+            "topics": data.get("topics", []),
+            "followups": data.get("followups", []),
+        })
         # Remove placeholder if present
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
@@ -1479,7 +1517,19 @@ class OverlayWindow(QWidget):
                 }
                 QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }
             """)
-            copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(text))
+            def _do_copy(btn=copy_btn, t=text):
+                QApplication.clipboard().setText(t)
+                btn.setText("✓ Copied!")
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton { color: #10b981; border-color: #10b981; }")
+                QTimer.singleShot(1500, lambda: (btn.setText("Copy"), btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent; border: 1px solid rgba(255,255,255,25);
+                        border-radius: 10px; color: #64748b; padding: 3px 10px;
+                        max-width: 60px;
+                    }
+                    QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }
+                """)))
+            copy_btn.clicked.connect(_do_copy)
             self.response_layout.addWidget(copy_btn)
             return
         self.response_layout.addWidget(lbl)
@@ -1540,6 +1590,7 @@ class OverlayWindow(QWidget):
         self._last_suggestion_data = None
         self._last_transcribed = ""
         self._last_words = []
+        self._export_entries.clear()
         if hasattr(self, '_claude_timer'):
             self._claude_timer.stop()
 
@@ -1608,12 +1659,75 @@ class OverlayWindow(QWidget):
         """)
 
     # ── SETTINGS ──────────────────────────────────────────────────────────────
+    def _export_session(self):
+        import datetime
+        now = datetime.datetime.now()
+        filename = os.path.join(
+            os.path.expanduser("~"), "Documents",
+            f"PandAI_Session_{now.strftime('%Y%m%d_%H%M%S')}.txt"
+        )
+        sep = "=" * 52
+        lines = [
+            "PandAI Assistant — Session Export",
+            f"Date : {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Mode : {MODE_LABELS.get(self.mode, self.mode)}",
+            "",
+            sep, "TRANSCRIPT", sep,
+            self.full_transcript.strip() or "(no transcript recorded)",
+            "",
+            sep, "SUGGESTIONS", sep,
+        ]
+        if not self._export_entries:
+            lines.append("(no suggestions generated this session)")
+        for entry in self._export_entries:
+            lines += [
+                f"\n[{entry['time']}]",
+                f"Context : {entry['snippet']}",
+                f"Response: {entry['response']}",
+            ]
+            if entry["topics"]:
+                lines.append("Topics  : " + " | ".join(t.get("title", "") for t in entry["topics"]))
+            if entry["followups"]:
+                lines.append("Ask next: " + " | ".join(entry["followups"]))
+        try:
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            # Brief feedback on the button
+            self.export_btn.setText("✓")
+            self.export_btn.setToolTip(f"Saved: {filename}")
+            QTimer.singleShot(2000, lambda: (
+                self.export_btn.setText("↓"),
+                self.export_btn.setToolTip("Export session transcript and suggestions to .txt")
+            ))
+        except Exception as e:
+            self.export_btn.setText("✗")
+            QTimer.singleShot(2000, lambda: self.export_btn.setText("↓"))
+
+    def _register_hotkey(self):
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+            hotkey = self.config.get("hotkey", "ctrl+shift+space")
+            keyboard.add_hotkey(hotkey, self._hotkey_signaler.triggered.emit)
+        except Exception:
+            pass
+
+    def _toggle_visibility(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
     def _open_settings(self):
         dlg = SettingsDialog(self.config, self)
         if dlg.exec():
             self.config = dlg.get_config()
             save_config(self.config)
             self._apply_stealth_mode(self.config.get("stealth_mode", False))
+            self._register_hotkey()
 
     # ── STEALTH MODE ──────────────────────────────────────────────────────────
     def _apply_stealth_mode(self, enabled: bool):
