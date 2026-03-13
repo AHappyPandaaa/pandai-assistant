@@ -209,6 +209,27 @@ class UpdateChecker(QThread):
         except Exception:
             pass  # silently ignore — no network, rate limit, etc.
 
+# ── AUTO UPDATER ──────────────────────────────────────────────────────────────
+class AutoUpdater(QThread):
+    """Runs `git pull` in the app directory and reports success/failure."""
+    finished = pyqtSignal(bool, str)  # (success, message)
+
+    def run(self):
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "pull"],
+                capture_output=True, text=True, timeout=60,
+                cwd=os.path.dirname(os.path.abspath(__file__))
+            )
+            if result.returncode == 0:
+                self.finished.emit(True, "Update complete! Restart to apply.")
+            else:
+                msg = (result.stderr.strip() or result.stdout.strip() or "unknown error")
+                self.finished.emit(False, f"git pull failed: {msg}")
+        except Exception as e:
+            self.finished.emit(False, f"Update failed: {e}")
+
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_device_native_rate(device_idx):
     """Return native sample rate for a device, defaulting to 44100."""
@@ -653,11 +674,20 @@ class OverlayWindow(QWidget):
         card_layout.addWidget(self.whisper_banner)
 
         # ── Update available banner (hidden until needed)
-        self.update_banner = QLabel("")
-        self.update_banner.setObjectName("banner_update")
-        self.update_banner.setWordWrap(True)
-        self.update_banner.setContentsMargins(12, 6, 12, 6)
-        self.update_banner.setOpenExternalLinks(True)
+        self.update_banner = QFrame()
+        self.update_banner.setObjectName("banner_update_frame")
+        _ub_row = QHBoxLayout(self.update_banner)
+        _ub_row.setContentsMargins(12, 4, 8, 4)
+        _ub_row.setSpacing(8)
+        self._update_banner_label = QLabel("")
+        self._update_banner_label.setObjectName("banner_update_label")
+        self._update_banner_label.setWordWrap(True)
+        self._update_now_btn = QPushButton("Update Now")
+        self._update_now_btn.setObjectName("update_now_btn")
+        self._update_now_btn.setFixedWidth(90)
+        self._update_now_btn.clicked.connect(self._do_update)
+        _ub_row.addWidget(self._update_banner_label, 1)
+        _ub_row.addWidget(self._update_now_btn)
         self.update_banner.hide()
         card_layout.addWidget(self.update_banner)
 
@@ -982,12 +1012,21 @@ class OverlayWindow(QWidget):
                 color: #fca5a5; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
-            #banner_update {{
+            #banner_update_frame {{
                 background: rgba(124,58,237,20);
                 border-bottom: 1px solid rgba(124,58,237,60);
-                color: #c4b5fd; font-size: 9pt; padding: 5px 12px;
             }}
-            #banner_update a {{ color: #a78bfa; }}
+            #banner_update_label {{
+                color: #c4b5fd; font-size: 9pt;
+            }}
+            #update_now_btn {{
+                background: rgba(124,58,237,180);
+                color: white; font-size: 8pt; font-weight: bold;
+                border: 1px solid rgba(124,58,237,200);
+                border-radius: 4px; padding: 3px 8px;
+            }}
+            #update_now_btn:hover {{ background: rgba(124,58,237,220); }}
+            #update_now_btn:disabled {{ background: rgba(124,58,237,80); color: rgba(255,255,255,120); }}
 
             #section_frame {{ background: transparent; }}
 
@@ -1079,12 +1118,38 @@ class OverlayWindow(QWidget):
         self._update_checker.start()
 
     def _on_update_available(self, remote_sha: str):
-        url = f"https://github.com/{GITHUB_REPO}"
-        self.update_banner.setText(
-            f'⬆  Update available ({remote_sha}) — '
-            f'<a href="{url}">Get latest on GitHub</a>'
-        )
+        self._update_banner_label.setText(f'⬆  Update available ({remote_sha})')
         self.update_banner.show()
+        self._apply_styles()
+
+    def _do_update(self):
+        self._update_now_btn.setEnabled(False)
+        self._update_banner_label.setText("⏳  Downloading update...")
+        self._auto_updater = AutoUpdater()
+        self._auto_updater.finished.connect(self._on_update_done)
+        self._auto_updater.start()
+
+    def _on_update_done(self, success: bool, message: str):
+        if success:
+            self._update_banner_label.setText(f"✓  {message}")
+            self._update_now_btn.setText("Restart")
+            self._update_now_btn.setEnabled(True)
+            self._update_now_btn.clicked.disconnect()
+            self._update_now_btn.clicked.connect(self._restart_app)
+        else:
+            self._update_banner_label.setText(f"✗  {message}")
+            self._update_now_btn.setText("Retry")
+            self._update_now_btn.setEnabled(True)
+
+    def _restart_app(self):
+        python = sys.executable
+        if sys.platform == "win32":
+            pythonw = os.path.join(os.path.dirname(python), "pythonw.exe")
+            if os.path.exists(pythonw):
+                python = pythonw
+        import subprocess
+        subprocess.Popen([python] + sys.argv)
+        QApplication.quit()
 
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
@@ -1550,6 +1615,14 @@ def _write_crash_log(exc_type, exc_value, exc_tb):
         pass
 
 if __name__ == "__main__":
+    # On Windows, re-launch with pythonw.exe to suppress the console window
+    if sys.platform == "win32" and os.path.basename(sys.executable).lower() == "python.exe":
+        _pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.exists(_pythonw):
+            import subprocess
+            subprocess.Popen([_pythonw] + sys.argv)
+            sys.exit(0)
+
     sys.excepthook = _write_crash_log
 
     app = QApplication(sys.argv)
