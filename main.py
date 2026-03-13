@@ -33,26 +33,14 @@ from PyQt6.QtGui import (
 # ── VERSION ──────────────────────────────────────────────────────────────────
 GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
 
-# Fallback version used when running as a compiled .exe (no .git directory).
-# Update this to the current commit SHA each time you build and distribute a new exe.
-APP_VERSION = "263171bf546e2100c25bb1a2d3ee4e423ed65f8c"
-
-def _local_commit_sha():
-    """Return the current git commit SHA, or APP_VERSION fallback (for compiled exes)."""
+def _local_version():
+    """Read version from version.txt next to this file."""
     try:
-        import subprocess
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=3,
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
-        sha = result.stdout.strip()
-        if len(sha) == 40:
-            return sha
+        vfile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.txt")
+        with open(vfile) as f:
+            return f.read().strip()
     except Exception:
-        pass
-    # Fallback: use the version baked in at build time (works in compiled .exe)
-    return APP_VERSION if len(APP_VERSION) == 40 else None
+        return None
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000
@@ -198,23 +186,22 @@ class WhisperLoader(QThread):
 
 # ── UPDATE CHECKER ───────────────────────────────────────────────────────────
 class UpdateChecker(QThread):
-    update_available = pyqtSignal(str)  # emits remote short SHA
+    update_available = pyqtSignal(str)  # emits remote version string
 
     def run(self):
-        local_sha = _local_commit_sha()
-        if not local_sha:
-            return  # not a git install, skip check
+        local_ver = _local_version()
+        if not local_ver:
+            return
         try:
-            import urllib.request, json as _json
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
+            import urllib.request
+            url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/version.txt"
             req = urllib.request.Request(url, headers={"User-Agent": "PandAI-Assistant"})
             with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read())
-            remote_sha = data.get("sha", "")
-            if remote_sha and remote_sha != local_sha:
-                self.update_available.emit(remote_sha[:7])
+                remote_ver = resp.read().decode().strip()
+            if remote_ver and remote_ver != local_ver:
+                self.update_available.emit(remote_ver)
         except Exception:
-            pass  # silently ignore — no network, rate limit, etc.
+            pass  # silently ignore — no network, etc.
 
 # ── AUTO UPDATER ──────────────────────────────────────────────────────────────
 class AutoUpdater(QThread):
