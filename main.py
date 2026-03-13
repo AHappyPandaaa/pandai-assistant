@@ -288,7 +288,8 @@ class AudioCapture(QThread):
     - This gives near-realtime transcription while keeping enough context
       for Whisper to be accurate.
     """
-    chunk_ready = pyqtSignal(np.ndarray)  # float32 mono at SAMPLE_RATE
+    mic_chunk_ready = pyqtSignal(np.ndarray)  # float32 mono at SAMPLE_RATE — mic source
+    sys_chunk_ready = pyqtSignal(np.ndarray)  # float32 mono at SAMPLE_RATE — system source
 
     def __init__(self, mic_idx=None, sys_idx=None):
         super().__init__()
@@ -357,64 +358,65 @@ class AudioCapture(QThread):
     def _emit_window(self):
         with self._lock:
             window_native = self._mic_rate * WINDOW_SECONDS
-            if len(self._ring_mic) < self._mic_rate * 0.5:
-                return  # not enough audio yet
+            has_mic = len(self._ring_mic) >= self._mic_rate * 0.5
 
-            mic_native = np.array(self._ring_mic[-window_native:], dtype=np.float32)
-            mic_chunk  = resample_to_whisper(mic_native, self._mic_rate)
+            mic_chunk = None
+            if has_mic:
+                mic_native = np.array(self._ring_mic[-window_native:], dtype=np.float32)
+                mic_chunk  = resample_to_whisper(mic_native, self._mic_rate)
 
+            sys_chunk = None
             if self._ring_sys:
                 window_sys = self._sys_rate * WINDOW_SECONDS
                 sys_native = np.array(self._ring_sys[-window_sys:], dtype=np.float32)
                 sys_chunk  = resample_to_whisper(sys_native, self._sys_rate)
-                min_len = min(len(mic_chunk), len(sys_chunk))
-                mixed = np.clip(mic_chunk[:min_len] * 0.6 + sys_chunk[:min_len] * 0.6, -1.0, 1.0)
-            else:
-                mixed = mic_chunk
 
-        self.chunk_ready.emit(mixed)
+        if mic_chunk is not None:
+            self.mic_chunk_ready.emit(mic_chunk)
+        if sys_chunk is not None:
+            self.sys_chunk_ready.emit(sys_chunk)
 
 # ── TRANSCRIPTION THREAD ─────────────────────────────────────────────────────
 class TranscribeWorker(QThread):
-    result = pyqtSignal(str)
+    result = pyqtSignal(str, str)  # (text, source) — source is "mic" or "sys"
 
-    def __init__(self, model, audio: np.ndarray):
+    def __init__(self, model, audio: np.ndarray, source: str = "mic", no_speech_thresh: float = 0.6):
         super().__init__()
-        self.model = model
-        self.audio = audio
+        self.model  = model
+        self.audio  = audio
+        self.source = source
+        self.no_speech_thresh = no_speech_thresh
 
     def run(self):
         try:
             segments, info = self.model.transcribe(
                 self.audio,
                 language="en",
-                beam_size=3,           # lower = faster, less over-generation
-                best_of=2,             # pick best of N candidates
-                temperature=0.0,       # deterministic — reduces hallucinations
-                condition_on_previous_text=False,  # prevents repetition loops
+                beam_size=3,
+                best_of=2,
+                temperature=0.0,
+                condition_on_previous_text=False,
                 vad_filter=True,
                 vad_parameters={
                     "min_silence_duration_ms": 400,
-                    "speech_pad_ms": 200,          # pad edges so words aren't clipped
-                    "threshold": 0.4,              # slightly lower = catches softer speech (headset)
+                    "speech_pad_ms": 200,
+                    "threshold": 0.4,
                 },
-                no_speech_threshold=0.6,           # discard segments that are probably silence
-                compression_ratio_threshold=2.0,   # discard garbled/repetitive output
-                log_prob_threshold=-0.8,           # discard low-confidence segments
+                no_speech_threshold=self.no_speech_thresh,
+                compression_ratio_threshold=2.0,
+                log_prob_threshold=-0.8,
             )
-            # Filter out low-confidence segments before joining
             parts = []
             for s in segments:
-                # Skip segments that are suspiciously short or repeated filler
                 txt = s.text.strip()
                 if not txt:
                     continue
-                if hasattr(s, 'no_speech_prob') and s.no_speech_prob > 0.6:
+                if hasattr(s, 'no_speech_prob') and s.no_speech_prob > self.no_speech_thresh:
                     continue
                 parts.append(txt)
             text = " ".join(parts).strip()
             if text:
-                self.result.emit(text)
+                self.result.emit(text, self.source)
         except Exception as e:
             print(f"Transcription error: {e}")
 
@@ -423,20 +425,26 @@ class ClaudeWorker(QThread):
     result = pyqtSignal(dict)
     error  = pyqtSignal(str)
 
-    def __init__(self, api_key, mode, transcript):
+    def __init__(self, api_key, mode, transcript, briefing="", custom_prompts=None):
         super().__init__()
-        self.api_key    = api_key
-        self.mode       = mode
-        self.transcript = transcript
+        self.api_key        = api_key
+        self.mode           = mode
+        self.transcript     = transcript
+        self.briefing       = briefing
+        self.custom_prompts = custom_prompts or {}
 
     def run(self):
         try:
             client = anthropic.Anthropic(api_key=self.api_key)
+            system = self.custom_prompts.get(self.mode) or SYSTEM_PROMPTS.get(self.mode, SYSTEM_PROMPTS["general"])
+            context = self.transcript[-800:]
+            if self.briefing:
+                context = f"Session context:\n{self.briefing}\n\nTranscript:\n{context}"
             msg = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=800,
-                system=SYSTEM_PROMPTS.get(self.mode, SYSTEM_PROMPTS["general"]),
-                messages=[{"role": "user", "content": f'Transcript:\n"{self.transcript[-800:]}"'}],
+                system=system,
+                messages=[{"role": "user", "content": f'Transcript:\n"{context}"'}],
             )
             raw = msg.content[0].text.strip()
             raw = raw.replace("```json", "").replace("```", "").strip()
@@ -448,14 +456,14 @@ class ClaudeWorker(QThread):
             self.error.emit(str(e))
 
 # ── SETTINGS DIALOG ───────────────────────────────────────────────────────────
-from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QGridLayout, QGroupBox
+from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QGridLayout, QGroupBox, QScrollArea as _QScrollArea
 
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 570)
+        self.setFixedSize(500, 640)
         self.setStyleSheet("""
             QDialog { background: #0d0e12; color: #e2e8f0; font-family: Segoe UI; }
             QLabel { color: #94a3b8; font-size: 10pt; }
@@ -589,6 +597,57 @@ class SettingsDialog(QDialog):
         priv_layout.addWidget(stealth_hint)
         layout.addWidget(priv_group)
 
+        # Transcription sensitivity
+        sens_group = QGroupBox("Transcription Sensitivity")
+        sens_layout = QVBoxLayout(sens_group)
+        sens_row = QHBoxLayout()
+        sens_low = QLabel("Strict")
+        sens_low.setStyleSheet("color: #475569; font-size: 9pt;")
+        sens_high = QLabel("Permissive")
+        sens_high.setStyleSheet("color: #475569; font-size: 9pt;")
+        self.sens_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sens_slider.setRange(1, 10)
+        self.sens_slider.setValue(self.config.get("transcription_sensitivity", 7))
+        self.sens_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.sens_slider.setTickInterval(1)
+        sens_row.addWidget(sens_low)
+        sens_row.addWidget(self.sens_slider, 1)
+        sens_row.addWidget(sens_high)
+        sens_hint = QLabel("Higher = captures more speech including quieter/unclear audio. Lower = only transcribes confident speech.")
+        sens_hint.setStyleSheet("color: #475569; font-size: 9pt;")
+        sens_hint.setWordWrap(True)
+        sens_layout.addLayout(sens_row)
+        sens_layout.addWidget(sens_hint)
+        layout.addWidget(sens_group)
+
+        # Custom system prompts per mode
+        prompt_group = QGroupBox("Mode System Prompts (optional override)")
+        prompt_layout = QVBoxLayout(prompt_group)
+        prompt_hint = QLabel("Leave blank to use the built-in prompt for each mode.")
+        prompt_hint.setStyleSheet("color: #475569; font-size: 9pt;")
+        prompt_layout.addWidget(prompt_hint)
+        prompt_mode_row = QHBoxLayout()
+        prompt_mode_row.addWidget(QLabel("Mode:"))
+        self.prompt_mode_combo = QComboBox()
+        for key, label in MODE_LABELS.items():
+            self.prompt_mode_combo.addItem(label, key)
+        prompt_mode_row.addWidget(self.prompt_mode_combo, 1)
+        prompt_layout.addLayout(prompt_mode_row)
+        self._custom_prompts = dict(self.config.get("custom_prompts", {}))
+        self.prompt_edit = QTextEdit()
+        self.prompt_edit.setFixedHeight(80)
+        self.prompt_edit.setPlaceholderText("Custom system prompt (leave blank to use default)…")
+        self.prompt_edit.setStyleSheet("QTextEdit { background: #1e2029; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px; color: #e2e8f0; font-size: 9pt; }")
+        self._load_prompt_for_mode(self.prompt_mode_combo.currentData())
+        self.prompt_mode_combo.currentIndexChanged.connect(
+            lambda: self._switch_prompt_mode()
+        )
+        self.prompt_edit.textChanged.connect(
+            lambda: self._custom_prompts.update({self.prompt_mode_combo.currentData(): self.prompt_edit.toPlainText()})
+        )
+        prompt_layout.addWidget(self.prompt_edit)
+        layout.addWidget(prompt_group)
+
         # Buttons
         btn_row = QHBoxLayout()
         cancel = QPushButton("Cancel")
@@ -600,13 +659,27 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(save)
         layout.addLayout(btn_row)
 
+    def _load_prompt_for_mode(self, mode_key):
+        self.prompt_edit.blockSignals(True)
+        self.prompt_edit.setPlainText(self._custom_prompts.get(mode_key, ""))
+        self.prompt_edit.blockSignals(False)
+
+    def _switch_prompt_mode(self):
+        # Save current edit before switching
+        self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
+        self._load_prompt_for_mode(self.prompt_mode_combo.currentData())
+
     def _save(self):
-        self.config["api_key"]      = self.api_input.text().strip()
-        self.config["mic_device"]   = self.mic_combo.currentData()
-        self.config["sys_device"]   = self.sys_combo.currentData()
-        self.config["capture_mode"] = self.capture_mode_combo.currentData()
-        self.config["hotkey"]       = self.hotkey_input.text().strip() or "ctrl+shift+space"
-        self.config["stealth_mode"] = self.stealth_check.isChecked()
+        self.config["api_key"]                   = self.api_input.text().strip()
+        self.config["mic_device"]                = self.mic_combo.currentData()
+        self.config["sys_device"]                = self.sys_combo.currentData()
+        self.config["capture_mode"]              = self.capture_mode_combo.currentData()
+        self.config["hotkey"]                    = self.hotkey_input.text().strip() or "ctrl+shift+space"
+        self.config["stealth_mode"]              = self.stealth_check.isChecked()
+        self.config["transcription_sensitivity"] = self.sens_slider.value()
+        # Save custom prompts, stripping empty entries
+        self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
+        self.config["custom_prompts"] = {k: v for k, v in self._custom_prompts.items() if v.strip()}
         self.accept()
 
     def get_config(self):
@@ -626,6 +699,11 @@ class OverlayWindow(QWidget):
         self._last_suggestion_data = None
         self._drag_pos    = None
         self._export_entries = []   # list of suggestion dicts for session export
+        self._briefing = ""           # pre-session context fed to Claude
+        self._display_transcript = "" # labelled transcript for the UI box
+        # Per-source dedup state for speaker labels
+        self._last_words_mic = []
+        self._last_words_sys = []
         self._hotkey_signaler = _HotkeySignaler()
         self._hotkey_signaler.triggered.connect(self._toggle_visibility)
         self._register_hotkey()
@@ -744,6 +822,32 @@ class OverlayWindow(QWidget):
         cl.addLayout(row1)
 
         card_layout.addWidget(ctrl)
+
+        # ── Briefing panel (collapsible)
+        self._briefing_panel = QFrame()
+        self._briefing_panel.setObjectName("briefing_panel")
+        bp_layout = QVBoxLayout(self._briefing_panel)
+        bp_layout.setContentsMargins(12, 6, 12, 6)
+        bp_layout.setSpacing(4)
+        bp_header = QHBoxLayout()
+        bp_label = QLabel("📋  SESSION BRIEFING")
+        bp_label.setObjectName("section_label")
+        self._briefing_toggle = QPushButton("▸ Expand")
+        self._briefing_toggle.setObjectName("briefing_toggle_btn")
+        self._briefing_toggle.setFixedHeight(18)
+        self._briefing_toggle.clicked.connect(self._toggle_briefing)
+        bp_header.addWidget(bp_label)
+        bp_header.addStretch()
+        bp_header.addWidget(self._briefing_toggle)
+        bp_layout.addLayout(bp_header)
+        self._briefing_edit = QTextEdit()
+        self._briefing_edit.setObjectName("briefing_edit")
+        self._briefing_edit.setPlaceholderText("Paste job description, meeting agenda, client background… Claude will use this as context for every suggestion.")
+        self._briefing_edit.setFixedHeight(70)
+        self._briefing_edit.textChanged.connect(lambda: setattr(self, '_briefing', self._briefing_edit.toPlainText()))
+        self._briefing_edit.hide()
+        bp_layout.addWidget(self._briefing_edit)
+        card_layout.addWidget(self._briefing_panel)
 
         # ── Whisper status banner
         self.whisper_banner = QLabel("⏳  Loading Whisper medium model (first run may take a moment)...")
@@ -1083,6 +1187,22 @@ class OverlayWindow(QWidget):
                 selection-background-color: rgba(0,212,255,60);
             }}
 
+            #briefing_panel {{
+                background: rgba(99,102,241,10);
+                border-bottom: 1px solid rgba(99,102,241,30);
+            }}
+            #briefing_edit {{
+                background: rgba(255,255,255,6);
+                border: 1px solid rgba(99,102,241,40);
+                border-radius: 6px; color: #cbd5e1;
+                font-size: 9pt; padding: 4px 6px;
+            }}
+            #briefing_toggle_btn {{
+                background: transparent; border: none;
+                color: #6366f1; font-size: 8pt; padding: 0;
+            }}
+            #briefing_toggle_btn:hover {{ color: #a5b4fc; }}
+
             #banner_loading {{
                 background: rgba(245,158,11,20);
                 border-bottom: 1px solid rgba(245,158,11,60);
@@ -1301,7 +1421,8 @@ class OverlayWindow(QWidget):
         sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
 
         self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
-        self.capture.chunk_ready.connect(self._on_audio_chunk)
+        self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
+        self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
         self.capture.start()
 
         self.rec_btn.setText("■  Stop Listening")
@@ -1321,35 +1442,31 @@ class OverlayWindow(QWidget):
         self.status_dot.setObjectName("dot_inactive")
         self.status_dot.setStyle(self.status_dot.style())
 
-    def _on_audio_chunk(self, audio: np.ndarray):
+    def _on_audio_chunk(self, audio: np.ndarray, source: str = "mic"):
         if not self.whisper:
             return
-        # Skip if a transcription is already in progress — avoid GPU queue pileup
-        if self.transcribe_q:
+        # Allow one worker per source to run concurrently
+        running_sources = [w.source for w in self.transcribe_q]
+        if source in running_sources:
             return
-        worker = TranscribeWorker(self.whisper, audio)
+        sensitivity = self.config.get("transcription_sensitivity", 7)
+        no_speech_thresh = round(0.9 - (sensitivity / 10) * 0.6, 2)
+        worker = TranscribeWorker(self.whisper, audio, source=source, no_speech_thresh=no_speech_thresh)
         worker.result.connect(self._on_transcription)
         self.transcribe_q.append(worker)
         worker.finished.connect(lambda: self.transcribe_q.remove(worker) if worker in self.transcribe_q else None)
         worker.start()
 
-    def _on_transcription(self, text: str):
+    def _on_transcription(self, text: str, source: str = "mic"):
+        import difflib
         text = text.strip()
         if not text:
             return
 
-        # Deduplicate: sliding window means Whisper re-transcribes overlap.
-        # Use difflib to find the longest matching suffix/prefix across windows.
-        if not hasattr(self, '_last_transcribed'):
-            self._last_transcribed = ""
-        if not hasattr(self, '_last_words'):
-            self._last_words = []
-
-        import difflib
+        # Per-source dedup state
+        last_words = self._last_words_mic if source == "mic" else self._last_words_sys
         curr_words = text.split()
-        last_words = self._last_words
 
-        # Find how many words at the END of last output match the START of current
         overlap = 0
         max_check = min(len(last_words), len(curr_words), 20)
         for n in range(max_check, 0, -1):
@@ -1357,8 +1474,6 @@ class OverlayWindow(QWidget):
                 overlap = n
                 break
 
-        # If no prefix overlap found, try fuzzy — check if current is mostly
-        # contained in last (Whisper re-ran same audio)
         if overlap == 0 and last_words:
             ratio = difflib.SequenceMatcher(
                 None,
@@ -1366,25 +1481,35 @@ class OverlayWindow(QWidget):
                 " ".join(curr_words).lower()
             ).ratio()
             if ratio > 0.85:
-                # Almost identical — fully duplicated window, skip
-                self._last_words = curr_words
-                self._last_transcribed = text
+                if source == "mic":
+                    self._last_words_mic = curr_words
+                else:
+                    self._last_words_sys = curr_words
                 return
 
         new_words = curr_words[overlap:]
+        if source == "mic":
+            self._last_words_mic = curr_words
+        else:
+            self._last_words_sys = curr_words
+
         if not new_words:
-            self._last_words = curr_words
-            self._last_transcribed = text
             return
 
         new_text = " ".join(new_words)
-        self._last_words = curr_words
-        self._last_transcribed = text
+        label = "🎤 You" if source == "mic" else "👤 Them"
+
+        # full_transcript (for Claude) — plain text, no labels
         self.full_transcript += " " + new_text
         if len(self.full_transcript) > 2000:
             self.full_transcript = self.full_transcript[-2000:]
 
-        self.transcript_box.setPlainText(self.full_transcript.strip()[-500:])
+        # Display transcript — labelled, shown in the box
+        self._display_transcript += f"\n{label}: {new_text}"
+        if len(self._display_transcript) > 3000:
+            self._display_transcript = self._display_transcript[-3000:]
+
+        self.transcript_box.setPlainText(self._display_transcript.strip()[-600:])
         cursor = self.transcript_box.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self.transcript_box.setTextCursor(cursor)
@@ -1441,7 +1566,9 @@ class OverlayWindow(QWidget):
             self._set_response_text("🔑 Add your Anthropic API key in Settings (⚙) to enable suggestions.", error=True)
             return
 
-        worker = ClaudeWorker(api_key, self.mode, self.full_transcript)
+        custom_prompts = self.config.get("custom_prompts", {})
+        worker = ClaudeWorker(api_key, self.mode, self.full_transcript,
+                              briefing=self._briefing, custom_prompts=custom_prompts)
         worker.result.connect(self._render_suggestions)
         worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
         self.claude_q.append(worker)
@@ -1600,7 +1727,12 @@ class OverlayWindow(QWidget):
         self._last_suggestion_data = None
         self._last_transcribed = ""
         self._last_words = []
+        self._last_words_mic = []
+        self._last_words_sys = []
+        self._display_transcript = ""
         self._export_entries.clear()
+        self._briefing = ""
+        self._briefing_edit.clear()
         if hasattr(self, '_claude_timer'):
             self._claude_timer.stop()
 
@@ -1713,6 +1845,11 @@ class OverlayWindow(QWidget):
         except Exception as e:
             self.export_btn.setText("✗")
             QTimer.singleShot(2000, lambda: self.export_btn.setText("↓"))
+
+    def _toggle_briefing(self):
+        visible = self._briefing_edit.isVisible()
+        self._briefing_edit.setVisible(not visible)
+        self._briefing_toggle.setText("▾ Collapse" if not visible else "▸ Expand")
 
     def _register_hotkey(self):
         try:
