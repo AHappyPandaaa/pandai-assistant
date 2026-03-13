@@ -613,7 +613,7 @@ class SettingsDialog(QDialog):
         sens_row.addWidget(sens_low)
         sens_row.addWidget(self.sens_slider, 1)
         sens_row.addWidget(sens_high)
-        sens_hint = QLabel("Higher = captures more speech including quieter/unclear audio. Lower = only transcribes confident speech.")
+        sens_hint = QLabel("Strict: only transcribes high-confidence speech. Permissive: captures more, including quieter or less clear audio.")
         sens_hint.setStyleSheet("color: #475569; font-size: 9pt;")
         sens_hint.setWordWrap(True)
         sens_layout.addLayout(sens_row)
