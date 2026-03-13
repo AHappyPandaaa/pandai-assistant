@@ -5,9 +5,10 @@
 REQUIREMENTS
 ------------
 - Windows 10 or 11
-- NVIDIA GPU (recommended for fast transcription)
+- NVIDIA GPU (recommended for fast transcription; CPU fallback included)
 - Internet connection for first-time setup (~1.5 GB download)
 - An Anthropic API key (free at console.anthropic.com)
+
 
 FIRST TIME SETUP
 ----------------
@@ -16,21 +17,62 @@ FIRST TIME SETUP
 3. Wait for setup to complete (5-10 minutes)
 4. A "PandAI Assistant" shortcut will appear on your Desktop
 
+
 LAUNCHING THE APP
 -----------------
 - Double-click the "PandAI Assistant" shortcut on your Desktop
 - OR double-click "launch.bat" inside this folder
+- Windows will show a UAC prompt — click YES to allow admin access
+  (required for the global hotkey to work system-wide)
+
 
 ADDING YOUR API KEY
 -------------------
 1. Go to console.anthropic.com and sign up for a free account
-2. Create an API key
+2. Create an API key under "API Keys"
 3. Open PandAI Assistant and click the Settings button (⚙)
 4. Paste your API key and click Save
+
+
+SETTING UP SYSTEM AUDIO CAPTURE (VB-Cable)
+-------------------------------------------
+PandAI Assistant can transcribe both your microphone AND the other
+person's voice on calls (Zoom, Teams, Meet, etc.). To capture system
+audio you need a free virtual audio cable driver called VB-Cable.
+
+Step 1 — Download VB-Cable:
+  https://vb-audio.com/Cable/
+  Click "Download VB-Cable" and extract the ZIP file.
+
+Step 2 — Install VB-Cable (requires admin):
+  Right-click "VBCABLE_Setup_x64.exe" and choose "Run as administrator"
+  Click Install and restart your PC when prompted.
+
+Step 3 — Set your audio output to VB-Cable:
+  Right-click the speaker icon in the system tray > Sound Settings
+  Under Output, select "CABLE Input (VB-Audio Virtual Cable)"
+  Note: your speakers will go quiet — this is expected.
+
+Step 4 — Configure in PandAI Assistant:
+  Open Settings (⚙) > System Audio Device
+  Select "CABLE Output (VB-Audio Virtual Cable)"
+  Click Save.
+
+Step 5 — Hear audio during calls (optional but recommended):
+  In Sound Settings > Output, you can use your headphones directly
+  in your calling app (Zoom/Teams) while routing system audio through
+  VB-Cable. Most calling apps let you choose audio output independently.
+
+  Alternatively, open the VB-Cable control panel and enable "Listen to
+  this device" pointed at your headphones so you still hear everything.
+
 
 NOTES
 -----
 - The first launch may take 30-60 seconds while the AI model loads
-- Audio routing software (e.g. VB-Cable) is needed to capture system audio
 - Your API key is stored locally and never shared
+- If the global hotkey doesn't work, make sure you clicked YES on the
+  UAC prompt at launch
+- Crash logs are saved to your Desktop as pandai_assistant_crash.txt
+
 ====================================
