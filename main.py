@@ -247,6 +247,16 @@ class AutoUpdater(QThread):
                         shutil.copytree(src, dst)
 
             os.unlink(tmp_path)
+
+            # Install any new dependencies silently
+            req_file = os.path.join(app_dir, "requirements.txt")
+            if os.path.exists(req_file):
+                import subprocess
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"],
+                    timeout=120
+                )
+
             self.finished.emit(True, "Update complete! Restart to apply.")
         except Exception as e:
             self.finished.emit(False, f"Update failed: {e}")
