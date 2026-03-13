@@ -218,22 +218,43 @@ class UpdateChecker(QThread):
 
 # ── AUTO UPDATER ──────────────────────────────────────────────────────────────
 class AutoUpdater(QThread):
-    """Runs `git pull` in the app directory and reports success/failure."""
+    """Downloads the latest code as a ZIP from GitHub and extracts it in-place."""
     finished = pyqtSignal(bool, str)  # (success, message)
 
     def run(self):
+        import urllib.request, zipfile, tempfile, shutil
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        zip_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
         try:
-            import subprocess
-            result = subprocess.run(
-                ["git", "pull"],
-                capture_output=True, text=True, timeout=60,
-                cwd=os.path.dirname(os.path.abspath(__file__))
-            )
-            if result.returncode == 0:
-                self.finished.emit(True, "Update complete! Restart to apply.")
-            else:
-                msg = (result.stderr.strip() or result.stdout.strip() or "unknown error")
-                self.finished.emit(False, f"git pull failed: {msg}")
+            # Download zip to a temp file
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp_path = tmp.name
+            urllib.request.urlretrieve(zip_url, tmp_path)
+
+            # Extract into a temp directory
+            with tempfile.TemporaryDirectory() as extract_dir:
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                # The zip contains a single top-level folder, e.g. "pandai-assistant-main"
+                entries = os.listdir(extract_dir)
+                if not entries:
+                    raise RuntimeError("Downloaded zip was empty")
+                src_dir = os.path.join(extract_dir, entries[0])
+
+                # Copy every file from the zip into the app directory
+                for item in os.listdir(src_dir):
+                    src = os.path.join(src_dir, item)
+                    dst = os.path.join(app_dir, item)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, dst)
+                    elif os.path.isdir(src):
+                        if os.path.exists(dst):
+                            shutil.rmtree(dst)
+                        shutil.copytree(src, dst)
+
+            os.unlink(tmp_path)
+            self.finished.emit(True, "Update complete! Restart to apply.")
         except Exception as e:
             self.finished.emit(False, f"Update failed: {e}")
 
