@@ -30,6 +30,10 @@ from PyQt6.QtGui import (
     QLinearGradient, QPalette, QCursor, QIcon
 )
 
+# ── VERSION ──────────────────────────────────────────────────────────────────
+VERSION = "1.0.0"
+GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
+
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000
 WINDOW_SECONDS = 8     # longer window = more context = fewer wrong words
@@ -171,6 +175,23 @@ class WhisperLoader(QThread):
             self.done.emit(None, str(e))
         except Exception as e2:
             self.done.emit(None, str(e2))
+
+# ── UPDATE CHECKER ───────────────────────────────────────────────────────────
+class UpdateChecker(QThread):
+    update_available = pyqtSignal(str)  # emits latest version string
+
+    def run(self):
+        try:
+            import urllib.request, json as _json
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "PandAI-Assistant"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read())
+            latest = data.get("tag_name", "").lstrip("v")
+            if latest and latest != VERSION:
+                self.update_available.emit(latest)
+        except Exception:
+            pass  # silently ignore — no network, rate limit, etc.
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_device_native_rate(device_idx):
@@ -615,6 +636,15 @@ class OverlayWindow(QWidget):
         self.whisper_banner.setContentsMargins(12, 6, 12, 6)
         card_layout.addWidget(self.whisper_banner)
 
+        # ── Update available banner (hidden until needed)
+        self.update_banner = QLabel("")
+        self.update_banner.setObjectName("banner_update")
+        self.update_banner.setWordWrap(True)
+        self.update_banner.setContentsMargins(12, 6, 12, 6)
+        self.update_banner.setOpenExternalLinks(True)
+        self.update_banner.hide()
+        card_layout.addWidget(self.update_banner)
+
         # ── Transcript
         t_frame = QFrame()
         t_frame.setObjectName("section_frame")
@@ -936,6 +966,12 @@ class OverlayWindow(QWidget):
                 color: #fca5a5; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
+            #banner_update {{
+                background: rgba(124,58,237,20);
+                border-bottom: 1px solid rgba(124,58,237,60);
+                color: #c4b5fd; font-size: 9pt; padding: 5px 12px;
+            }}
+            #banner_update a {{ color: #a78bfa; }}
 
             #section_frame {{ background: transparent; }}
 
@@ -1021,6 +1057,18 @@ class OverlayWindow(QWidget):
             self.whisper_banner.setText(msg) or self._apply_styles()
         ))
         self.loader.start()
+
+        self._update_checker = UpdateChecker()
+        self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.start()
+
+    def _on_update_available(self, latest: str):
+        url = f"https://github.com/{GITHUB_REPO}/releases/latest"
+        self.update_banner.setText(
+            f'⬆  Update available: v{latest} — '
+            f'<a href="{url}">Download</a>'
+        )
+        self.update_banner.show()
 
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
