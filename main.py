@@ -666,7 +666,7 @@ class OverlayWindow(QWidget):
         hide_btn = QPushButton("✕")
         hide_btn.setObjectName("icon_btn")
         hide_btn.setFixedSize(26, 26)
-        hide_btn.clicked.connect(self.hide)
+        hide_btn.clicked.connect(self.close)
 
         hl.addWidget(self.status_dot)
         hl.addWidget(title)
@@ -1188,7 +1188,35 @@ class OverlayWindow(QWidget):
                 python = pythonw
         import subprocess
         subprocess.Popen([python] + sys.argv)
+        self.close()
+
+    def closeEvent(self, event):
+        """Ensure all threads are stopped before the process exits."""
+        # Stop audio capture and wait for its thread to finish
+        if self.capture:
+            self.capture.stop()
+            self.capture.wait(3000)
+            self.capture = None
+
+        # Stop in-flight transcription and Claude workers
+        for w in list(self.transcribe_q):
+            w.quit()
+            w.wait(1000)
+        self.transcribe_q.clear()
+        for w in list(self.claude_q):
+            w.quit()
+            w.wait(1000)
+        self.claude_q.clear()
+
+        # Stop any background utility threads
+        for attr in ("_update_checker", "_auto_updater", "_whisper_loader"):
+            t = getattr(self, attr, None)
+            if t and t.isRunning():
+                t.quit()
+                t.wait(2000)
+
         QApplication.quit()
+        event.accept()
 
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
@@ -1682,7 +1710,7 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setApplicationName("PandAI Assistant")
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
 
     window = OverlayWindow()
     window.show()
