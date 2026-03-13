@@ -33,8 +33,12 @@ from PyQt6.QtGui import (
 # ── VERSION ──────────────────────────────────────────────────────────────────
 GITHUB_REPO = "AHappyPandaaa/pandai-assistant"
 
+# Fallback version used when running as a compiled .exe (no .git directory).
+# Update this to the current commit SHA each time you build and distribute a new exe.
+APP_VERSION = "8be2a46589bc42d32a452c8fb8e04b8cc148bbfb"
+
 def _local_commit_sha():
-    """Return the current git commit SHA, or None if not in a git repo."""
+    """Return the current git commit SHA, or APP_VERSION fallback (for compiled exes)."""
     try:
         import subprocess
         result = subprocess.run(
@@ -43,9 +47,12 @@ def _local_commit_sha():
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
         sha = result.stdout.strip()
-        return sha if len(sha) == 40 else None
+        if len(sha) == 40:
+            return sha
     except Exception:
-        return None
+        pass
+    # Fallback: use the version baked in at build time (works in compiled .exe)
+    return APP_VERSION if len(APP_VERSION) == 40 else None
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16000
