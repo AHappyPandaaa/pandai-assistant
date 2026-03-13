@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextEdit,
     QScrollArea, QFrame, QSizeGrip, QSlider, QStackedWidget,
-    QSizePolicy, QTabWidget
+    QSizePolicy, QTabWidget, QCheckBox
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve
