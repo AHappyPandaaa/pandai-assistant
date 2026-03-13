@@ -16,3 +16,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# User config (API key lives here — never commit this)
+.pandai_assistant.json
