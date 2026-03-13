@@ -463,50 +463,89 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 640)
-        self.setStyleSheet("""
-            QDialog { background: #0d0e12; color: #e2e8f0; font-family: Segoe UI; }
-            QLabel { color: #94a3b8; font-size: 10pt; }
-            QLabel.heading { color: #e2e8f0; font-size: 10pt; font-weight: bold; }
-            QLineEdit {
-                background: #1e2029; border: 1px solid rgba(255,255,255,0.1);
+        self.setFixedSize(500, 660)
+        self._apply_theme_styles()
+        self._build_ui()
+
+    def _apply_theme_styles(self):
+        dark = (self.config.get("theme", "dark") != "light")
+        dlg_bg      = "#0d0e12"              if dark else "#f8fafc"
+        dlg_fg      = "#e2e8f0"              if dark else "#1e293b"
+        lbl_col     = "#94a3b8"              if dark else "#475569"
+        inp_bg      = "#1e2029"              if dark else "#ffffff"
+        inp_br      = "rgba(255,255,255,0.1)" if dark else "rgba(0,0,0,0.12)"
+        inp_fg      = "#e2e8f0"              if dark else "#1e293b"
+        focus_br    = "rgba(0,212,255,0.4)"  if dark else "rgba(2,132,199,0.5)"
+        grp_br      = "rgba(255,255,255,0.07)" if dark else "rgba(0,0,0,0.08)"
+        grp_col     = "#64748b"
+        chk_fg      = "#e2e8f0"              if dark else "#1e293b"
+        chk_ind_bg  = "#1e2029"              if dark else "#ffffff"
+        chk_ind_br  = "rgba(255,255,255,0.2)" if dark else "rgba(0,0,0,0.2)"
+        cancel_bg   = "rgba(255,255,255,0.06)" if dark else "rgba(0,0,0,0.05)"
+        cancel_br   = "rgba(255,255,255,0.1)"  if dark else "rgba(0,0,0,0.1)"
+        cancel_fg   = "#94a3b8"              if dark else "#64748b"
+        self.setStyleSheet(f"""
+            QDialog {{ background: {dlg_bg}; color: {dlg_fg}; font-family: Segoe UI; }}
+            QLabel {{ color: {lbl_col}; font-size: 10pt; }}
+            QLineEdit {{
+                background: {inp_bg}; border: 1px solid {inp_br};
                 border-radius: 6px; padding: 7px 10px;
-                color: #e2e8f0; font-size: 10pt;
-            }
-            QLineEdit:focus { border-color: rgba(0,212,255,0.4); }
-            QComboBox {
-                background: #1e2029; border: 1px solid rgba(255,255,255,0.1);
+                color: {inp_fg}; font-size: 10pt;
+            }}
+            QLineEdit:focus {{ border-color: {focus_br}; }}
+            QComboBox {{
+                background: {inp_bg}; border: 1px solid {inp_br};
                 border-radius: 6px; padding: 7px 10px;
-                color: #e2e8f0; font-size: 10pt;
-            }
-            QPushButton {
+                color: {inp_fg}; font-size: 10pt;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {inp_bg}; color: {inp_fg};
+            }}
+            QTextEdit {{
+                background: {inp_bg}; border: 1px solid {inp_br};
+                border-radius: 6px; padding: 6px;
+                color: {inp_fg}; font-size: 9pt;
+            }}
+            QPushButton {{
                 background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
                 border: none; border-radius: 8px; padding: 10px;
                 color: white; font-size: 10pt; font-weight: bold;
-            }
-            QPushButton:hover { opacity: 0.85; }
-            QPushButton#cancel {
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.1);
-                color: #94a3b8;
-            }
-            QGroupBox {
-                border: 1px solid rgba(255,255,255,0.07);
+            }}
+            QPushButton:hover {{ opacity: 0.85; }}
+            QPushButton#cancel {{
+                background: {cancel_bg};
+                border: 1px solid {cancel_br};
+                color: {cancel_fg};
+            }}
+            QPushButton#show_btn {{
+                background: {cancel_bg};
+                border: 1px solid {cancel_br};
+                color: {cancel_fg};
+                border-radius: 6px; padding: 6px; font-size: 11px;
+            }}
+            QGroupBox {{
+                border: 1px solid {grp_br};
                 border-radius: 8px; margin-top: 8px; padding: 12px;
-                color: #64748b; font-size: 9pt;
-            }
-            QCheckBox { color: #e2e8f0; font-size: 10pt; spacing: 8px; }
-            QCheckBox::indicator {
+                color: {grp_col}; font-size: 9pt;
+            }}
+            QCheckBox {{ color: {chk_fg}; font-size: 10pt; spacing: 8px; }}
+            QCheckBox::indicator {{
                 width: 16px; height: 16px;
-                border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;
-                background: #1e2029;
-            }
-            QCheckBox::indicator:checked {
+                border: 1px solid {chk_ind_br}; border-radius: 4px;
+                background: {chk_ind_bg};
+            }}
+            QCheckBox::indicator:checked {{
                 background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
                 border-color: transparent;
-            }
+            }}
+            QSlider::groove:horizontal {{
+                height: 3px; background: {inp_br}; border-radius: 2px;
+            }}
+            QSlider::handle:horizontal {{
+                width: 12px; height: 12px; margin: -5px 0;
+                background: {'#00d4ff' if dark else '#0284c7'}; border-radius: 6px;
+            }}
         """)
-        self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -583,6 +622,17 @@ class SettingsDialog(QDialog):
         hotkey_hint.setWordWrap(True)
         hotkey_layout.addWidget(self.hotkey_input)
         hotkey_layout.addWidget(hotkey_hint)
+        # Show hotkey registration status from parent window
+        hotkey_err = getattr(parent, "_hotkey_error", None) if parent else None
+        if hotkey_err:
+            hotkey_status = QLabel(f"⚠  Hotkey error: {hotkey_err}")
+            hotkey_status.setStyleSheet("color: #f87171; font-size: 9pt;")
+            hotkey_status.setWordWrap(True)
+            hotkey_layout.addWidget(hotkey_status)
+        else:
+            hotkey_ok = QLabel(f"✓  Active: {self.config.get('hotkey', 'ctrl+shift+space')}")
+            hotkey_ok.setStyleSheet("color: #6ee7b7; font-size: 9pt;")
+            hotkey_layout.addWidget(hotkey_ok)
         layout.addWidget(hotkey_group)
 
         # Privacy
@@ -659,8 +709,18 @@ class SettingsDialog(QDialog):
         for i in range(self.theme_combo.count()):
             if self.theme_combo.itemData(i) == saved_theme:
                 self.theme_combo.setCurrentIndex(i)
+        def _on_theme_changed():
+            self.config["theme"] = self.theme_combo.currentData()
+            self._apply_theme_styles()
+        self.theme_combo.currentIndexChanged.connect(_on_theme_changed)
         appear_layout.addWidget(self.theme_combo, 1)
         layout.addWidget(appear_group)
+
+        # What's New
+        whats_new_btn = QPushButton("📋  What's New")
+        whats_new_btn.setObjectName("cancel")
+        whats_new_btn.clicked.connect(self._show_changelog)
+        layout.addWidget(whats_new_btn)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -672,6 +732,58 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(cancel)
         btn_row.addWidget(save)
         layout.addLayout(btn_row)
+
+    def _show_changelog(self):
+        dark = (self.config.get("theme", "dark") != "light")
+        dlg_bg  = "#0d0e12" if dark else "#f8fafc"
+        dlg_fg  = "#e2e8f0" if dark else "#1e293b"
+        txt_bg  = "#1e2029" if dark else "#ffffff"
+        txt_br  = "rgba(255,255,255,0.08)" if dark else "rgba(0,0,0,0.08)"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("What's New")
+        dlg.setFixedSize(480, 520)
+        dlg.setStyleSheet(f"""
+            QDialog {{ background: {dlg_bg}; font-family: Segoe UI; }}
+            QTextEdit {{
+                background: {txt_bg}; color: {dlg_fg};
+                border: 1px solid {txt_br}; border-radius: 8px;
+                font-size: 10pt; padding: 8px;
+            }}
+            QPushButton {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
+                border: none; border-radius: 8px; padding: 10px;
+                color: white; font-size: 10pt; font-weight: bold;
+            }}
+        """)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(10)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        v.addWidget(text)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        v.addWidget(close_btn)
+
+        # Try fetching from GitHub, fall back to local file
+        def _fetch():
+            try:
+                import urllib.request
+                url = "https://raw.githubusercontent.com/AHappyPandaaa/pandai-assistant/main/CHANGELOG.md"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    return r.read().decode("utf-8")
+            except Exception:
+                pass
+            try:
+                local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
+                with open(local, encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return "Could not load changelog."
+
+        text.setPlainText(_fetch())
+        dlg.exec()
 
     def _load_prompt_for_mode(self, mode_key):
         self.prompt_edit.blockSignals(True)
@@ -720,7 +832,10 @@ class OverlayWindow(QWidget):
         self._last_words_mic = []
         self._last_words_sys = []
         self._hotkey_signaler = _HotkeySignaler()
-        self._hotkey_signaler.triggered.connect(self._toggle_visibility)
+        self._hotkey_signaler.triggered.connect(
+            self._toggle_visibility, Qt.ConnectionType.QueuedConnection
+        )
+        self._hotkey_error = None
         self._register_hotkey()
         self._opacity_val = 1.0
         self._theme = self.config.get("theme", "dark")
@@ -1919,8 +2034,9 @@ class OverlayWindow(QWidget):
             keyboard.unhook_all_hotkeys()
             hotkey = self.config.get("hotkey", "ctrl+shift+space")
             keyboard.add_hotkey(hotkey, self._hotkey_signaler.triggered.emit)
-        except Exception:
-            pass
+            self._hotkey_error = None
+        except Exception as e:
+            self._hotkey_error = str(e)
 
     def _toggle_visibility(self):
         if self.isVisible():
