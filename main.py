@@ -10,6 +10,7 @@ import threading
 import queue
 import time
 import json
+import re
 import numpy as np
 import sounddevice as sd
 import anthropic
@@ -178,19 +179,23 @@ class WhisperLoader(QThread):
     done = pyqtSignal(object, str)   # model, error
     status = pyqtSignal(str)         # progress messages
 
+    def __init__(self, model_size="medium"):
+        super().__init__()
+        self.model_size = model_size
+
     def run(self):
         # Check for NVIDIA GPU first — skip CUDA entirely if not present
         has_nvidia = _nvidia_gpu_available()
 
         if has_nvidia:
-            self.status.emit("⏳  Loading Whisper on GPU (CUDA)...")
+            self.status.emit(f"⏳  Loading Whisper {self.model_size} on GPU (CUDA)...")
             try:
                 _add_cuda_dll_paths()
             except Exception as e:
                 print(f"DLL path warning: {e}")
 
             try:
-                model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+                model = WhisperModel(self.model_size, device="cuda", compute_type="float16")
                 self.done.emit(model, "")
                 return
             except Exception as e:
@@ -198,8 +203,8 @@ class WhisperLoader(QThread):
 
         # CPU fallback — either no NVIDIA GPU or CUDA failed
         try:
-            self.status.emit("⏳  Loading Whisper on CPU...")
-            model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+            self.status.emit(f"⏳  Loading Whisper {self.model_size} on CPU...")
+            model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
             msg = "" if has_nvidia else "No NVIDIA GPU detected — running on CPU"
             self.done.emit(model, msg)
         except Exception as e:
@@ -471,8 +476,9 @@ class TranscribeWorker(QThread):
 
 # ── CLAUDE WORKER ─────────────────────────────────────────────────────────────
 class ClaudeWorker(QThread):
-    result = pyqtSignal(dict)
-    error  = pyqtSignal(str)
+    result      = pyqtSignal(dict)
+    error       = pyqtSignal(str)
+    stream_text = pyqtSignal(str)   # progressive response text while streaming
 
     def __init__(self, api_key, mode, transcript, briefing="", custom_prompts=None):
         super().__init__()
@@ -489,14 +495,29 @@ class ClaudeWorker(QThread):
             context = self.transcript[-800:]
             if self.briefing:
                 context = f"Session context:\n{self.briefing}\n\nTranscript:\n{context}"
-            msg = client.messages.create(
+
+            full_text = ""
+            last_streamed = ""
+            with client.messages.stream(
                 model="claude-sonnet-4-20250514",
                 max_tokens=800,
                 system=system,
                 messages=[{"role": "user", "content": f'Transcript:\n"{context}"'}],
-            )
-            raw = msg.content[0].text.strip()
-            raw = raw.replace("```json", "").replace("```", "").strip()
+            ) as stream:
+                for chunk in stream.text_stream:
+                    full_text += chunk
+                    # Progressively extract the "response" field value as it arrives
+                    m = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', full_text)
+                    if m:
+                        partial = (m.group(1)
+                                   .replace('\\"', '"')
+                                   .replace('\\\\', '\\')
+                                   .replace('\\n', '\n'))
+                        if partial != last_streamed:
+                            self.stream_text.emit(partial)
+                            last_streamed = partial
+
+            raw = full_text.strip().replace("```json", "").replace("```", "").strip()
             data = json.loads(raw)
             self.result.emit(data)
         except json.JSONDecodeError:
@@ -512,7 +533,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 660)
+        self.setFixedSize(500, 720)
         self._apply_theme_styles()
         self._build_ui()
 
@@ -689,7 +710,7 @@ class SettingsDialog(QDialog):
         priv_layout = QVBoxLayout(priv_group)
         self.stealth_check = QCheckBox("Stealth mode — hide from screen sharing")
         self.stealth_check.setChecked(self.config.get("stealth_mode", False))
-        stealth_hint = QLabel("Window stays visible to you but won't appear in screen captures or recordings (Windows 10 2004+)")
+        stealth_hint = QLabel("Window stays visible to you but won't appear in screen captures or recordings (Windows 10 2004+). The window is always hidden from Alt+Tab regardless of this setting.")
         stealth_hint.setStyleSheet("color: #475569; font-size: 9pt;")
         stealth_hint.setWordWrap(True)
         priv_layout.addWidget(self.stealth_check)
@@ -746,6 +767,29 @@ class SettingsDialog(QDialog):
         )
         prompt_layout.addWidget(self.prompt_edit)
         layout.addWidget(prompt_group)
+
+        # Transcription model
+        model_group = QGroupBox("Transcription Model")
+        model_layout = QVBoxLayout(model_group)
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("tiny — Fastest, lowest accuracy", "tiny")
+        self.model_combo.addItem("base — Fast, good for slow hardware", "base")
+        self.model_combo.addItem("small — Balanced (good for CPU)", "small")
+        self.model_combo.addItem("medium — High accuracy (recommended for GPU)", "medium")
+        self.model_combo.addItem("large-v3 — Best accuracy (GPU required)", "large-v3")
+        saved_model = self.config.get("whisper_model", "medium")
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == saved_model:
+                self.model_combo.setCurrentIndex(i)
+        model_row.addWidget(self.model_combo, 1)
+        model_layout.addLayout(model_row)
+        model_hint = QLabel("Changing the model will reload Whisper when you save. large-v3 requires a GPU with ≥4 GB VRAM.")
+        model_hint.setStyleSheet("color: #475569; font-size: 9pt;")
+        model_hint.setWordWrap(True)
+        model_layout.addWidget(model_hint)
+        layout.addWidget(model_group)
 
         # Appearance
         appear_group = QGroupBox("Appearance")
@@ -854,8 +898,9 @@ class SettingsDialog(QDialog):
         self.config["transcription_sensitivity"] = self.sens_slider.value()
         # Save custom prompts, stripping empty entries
         self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
-        self.config["custom_prompts"] = {k: v for k, v in self._custom_prompts.items() if v.strip()}
-        self.config["theme"]          = self.theme_combo.currentData()
+        self.config["custom_prompts"]  = {k: v for k, v in self._custom_prompts.items() if v.strip()}
+        self.config["theme"]           = self.theme_combo.currentData()
+        self.config["whisper_model"]   = self.model_combo.currentData()
         self.accept()
 
     def get_config(self):
@@ -879,6 +924,7 @@ class OverlayWindow(QWidget):
         self._paused = False
         self._briefing = ""           # pre-session context fed to Claude
         self._display_transcript = "" # labelled transcript for the UI box
+        self._stream_label = None     # QLabel reused during streaming, cleared on full render
         # Per-source dedup state for speaker labels
         self._last_words_mic = []
         self._last_words_sys = []
@@ -1037,6 +1083,38 @@ class OverlayWindow(QWidget):
         bp_header.addStretch()
         bp_header.addWidget(self._briefing_toggle)
         bp_layout.addLayout(bp_header)
+
+        # Template row (shown/hidden with the briefing edit)
+        self._template_row = QWidget()
+        tpl_row_layout = QHBoxLayout(self._template_row)
+        tpl_row_layout.setContentsMargins(0, 0, 0, 0)
+        tpl_row_layout.setSpacing(4)
+        self._template_combo = QComboBox()
+        self._template_combo.setFixedHeight(22)
+        _tpl_btn_style = (
+            "QPushButton { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);"
+            " border-radius: 4px; color: #94a3b8; padding: 2px 8px; font-size: 9pt; }"
+            "QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }"
+        )
+        self._save_tpl_btn = QPushButton("💾 Save")
+        self._save_tpl_btn.setFixedHeight(22)
+        self._save_tpl_btn.setStyleSheet(_tpl_btn_style)
+        self._save_tpl_btn.setToolTip("Save current text as a named template")
+        self._del_tpl_btn = QPushButton("🗑")
+        self._del_tpl_btn.setFixedHeight(22)
+        self._del_tpl_btn.setFixedWidth(28)
+        self._del_tpl_btn.setStyleSheet(_tpl_btn_style)
+        self._del_tpl_btn.setToolTip("Delete selected template")
+        tpl_row_layout.addWidget(self._template_combo, 1)
+        tpl_row_layout.addWidget(self._save_tpl_btn)
+        tpl_row_layout.addWidget(self._del_tpl_btn)
+        self._template_combo.currentIndexChanged.connect(self._on_template_selected)
+        self._save_tpl_btn.clicked.connect(self._save_template)
+        self._del_tpl_btn.clicked.connect(self._delete_template)
+        self._template_row.hide()
+        bp_layout.addWidget(self._template_row)
+        self._load_template_combo()
+
         self._briefing_edit = QTextEdit()
         self._briefing_edit.setObjectName("briefing_edit")
         self._briefing_edit.setPlaceholderText("Paste job description, meeting agenda, client background… used as context for every suggestion.")
@@ -1593,7 +1671,7 @@ class OverlayWindow(QWidget):
 
     # ── WHISPER LOADING ───────────────────────────────────────────────────────
     def _load_whisper(self):
-        self.loader = WhisperLoader()
+        self.loader = WhisperLoader(self.config.get("whisper_model", "medium"))
         self.loader.done.connect(self._on_whisper_loaded)
         self.loader.status.connect(lambda msg: (
             self.whisper_banner.setText(msg) or self._apply_styles()
@@ -1669,7 +1747,7 @@ class OverlayWindow(QWidget):
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
         if model:
-            msg = f"✓  Whisper {WHISPER_MODEL} ready"
+            msg = f"✓  Whisper {self.loader.model_size} ready"
             if err:
                 msg += f"  ({err})"
             self.whisper_banner.setObjectName("banner_ok")
@@ -1889,6 +1967,7 @@ class OverlayWindow(QWidget):
         custom_prompts = self.config.get("custom_prompts", {})
         worker = ClaudeWorker(api_key, self.mode, self.full_transcript,
                               briefing=self._briefing, custom_prompts=custom_prompts)
+        worker.stream_text.connect(self._on_stream_chunk)
         worker.result.connect(self._render_suggestions)
         worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
         self.claude_q.append(worker)
@@ -1896,7 +1975,24 @@ class OverlayWindow(QWidget):
         self._set_response_text("Analyzing conversation...", thinking=True)
         worker.start()
 
+    def _on_stream_chunk(self, text: str):
+        """Update the response area with progressively streamed text (no copy button yet)."""
+        if self._stream_label is None:
+            # First chunk — clear the "Analyzing..." message and create the stream label
+            while self.response_layout.count():
+                item = self.response_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._stream_label = QLabel("")
+            self._stream_label.setWordWrap(True)
+            self._stream_label.setFont(QFont("Segoe UI", 10))
+            self._stream_label.setStyleSheet("color: #cbd5e1;")
+            self.response_layout.addWidget(self._stream_label)
+        self._stream_label.setText(text)
+
     def _render_suggestions(self, data: dict):
+        # Mark streaming as done — full render below will replace with copy button
+        self._stream_label = None
         # Store for potential auto-archive use
         self._last_suggestion_data = data
         # Save to history before rendering live view
@@ -2166,9 +2262,65 @@ class OverlayWindow(QWidget):
             self.export_btn.setText("✗")
             QTimer.singleShot(2000, lambda: self.export_btn.setText("↓"))
 
+    # ── BRIEFING TEMPLATES ────────────────────────────────────────────────────
+    def _load_template_combo(self):
+        self._template_combo.blockSignals(True)
+        self._template_combo.clear()
+        self._template_combo.addItem("— Select template —", None)
+        for tpl in self.config.get("briefing_templates", []):
+            self._template_combo.addItem(tpl["name"], tpl["text"])
+        self._template_combo.setCurrentIndex(0)
+        self._template_combo.blockSignals(False)
+
+    def _on_template_selected(self, index):
+        text = self._template_combo.itemData(index)
+        if text is not None:
+            self._briefing_edit.setPlainText(text)
+            # Reset to placeholder after a tick so user can re-select same template
+            QTimer.singleShot(100, lambda: self._template_combo.blockSignals(True) or
+                              self._template_combo.setCurrentIndex(0) or
+                              self._template_combo.blockSignals(False))
+
+    def _save_template(self):
+        from PyQt6.QtWidgets import QInputDialog
+        text = self._briefing_edit.toPlainText().strip()
+        if not text:
+            return
+        name, ok = QInputDialog.getText(self, "Save Template", "Template name:")
+        if not ok or not name.strip():
+            return
+        templates = self.config.setdefault("briefing_templates", [])
+        # Overwrite if name already exists
+        for tpl in templates:
+            if tpl["name"] == name.strip():
+                tpl["text"] = text
+                save_config(self.config)
+                self._load_template_combo()
+                return
+        templates.append({"name": name.strip(), "text": text})
+        save_config(self.config)
+        self._load_template_combo()
+
+    def _delete_template(self):
+        from PyQt6.QtWidgets import QMessageBox
+        idx = self._template_combo.currentIndex()
+        if idx <= 0:
+            return
+        name = self._template_combo.currentText()
+        if QMessageBox.question(self, "Delete Template",
+                                f'Delete template "{name}"?',
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        templates = self.config.get("briefing_templates", [])
+        self.config["briefing_templates"] = [t for t in templates if t["name"] != name]
+        save_config(self.config)
+        self._load_template_combo()
+
     def _toggle_briefing(self):
         visible = self._briefing_edit.isVisible()
         self._briefing_edit.setVisible(not visible)
+        self._template_row.setVisible(not visible)
         self._briefing_toggle.setText("▾ Collapse" if not visible else "▸ Expand")
 
     def _register_hotkey(self):
@@ -2196,26 +2348,62 @@ class OverlayWindow(QWidget):
     def _open_settings(self):
         dlg = SettingsDialog(self.config, self)
         if dlg.exec():
+            old_model = self.config.get("whisper_model", "medium")
             self.config = dlg.get_config()
             save_config(self.config)
             self._theme = self.config.get("theme", "dark")
             self._apply_styles()
             self._set_opacity(int(self._opacity_val * 100))
-            self._apply_stealth_mode(self.config.get("stealth_mode", False))
+            stealth_on = self.config.get("stealth_mode", False)
+            if stealth_on and not self._apply_stealth_mode(True):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Stealth Mode Unavailable",
+                    "Stealth mode requires Windows 10 Build 2004 (May 2020) or later.\n\n"
+                    "The setting has been saved but is not active on this system."
+                )
+            else:
+                self._apply_stealth_mode(stealth_on)
+            self._hide_from_alttab()
             self._register_hotkey()
+            # Reload Whisper if the model changed
+            if self.config.get("whisper_model", "medium") != old_model:
+                self.whisper = None
+                if self.capture:
+                    self._stop_recording()
+                self._load_whisper()
 
     # ── STEALTH MODE ──────────────────────────────────────────────────────────
-    def _apply_stealth_mode(self, enabled: bool):
-        """Hide the window from screen capture using Windows display affinity."""
+    def _apply_stealth_mode(self, enabled: bool) -> bool:
+        """Hide the window from screen capture using Windows display affinity.
+        Returns True on success, False if the API call failed (e.g. old Windows)."""
         if sys.platform != "win32":
-            return
+            return not enabled
         try:
             import ctypes
             WDA_NONE               = 0x00000000
             WDA_EXCLUDEFROMCAPTURE = 0x00000011
             hwnd = int(self.winId())
             affinity = WDA_EXCLUDEFROMCAPTURE if enabled else WDA_NONE
-            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+            result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+            return bool(result)
+        except Exception:
+            return False
+
+    def _hide_from_alttab(self):
+        """Remove window from Alt+Tab switcher by setting WS_EX_TOOLWINDOW
+        and clearing WS_EX_APPWINDOW via ctypes (belt-and-suspenders over Qt.Tool)."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            GWL_EXSTYLE      = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_APPWINDOW  = 0x00040000
+            hwnd = int(self.winId())
+            style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+            style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
         except Exception:
             pass
 
@@ -2332,5 +2520,15 @@ if __name__ == "__main__":
 
     window = OverlayWindow()
     window.show()
-    window._apply_stealth_mode(window.config.get("stealth_mode", False))
+    window._hide_from_alttab()
+    stealth_on = window.config.get("stealth_mode", False)
+    if stealth_on and not window._apply_stealth_mode(True):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            window, "Stealth Mode Unavailable",
+            "Stealth mode requires Windows 10 Build 2004 (May 2020) or later.\n\n"
+            "The setting has been saved but is not active on this system."
+        )
+    else:
+        window._apply_stealth_mode(stealth_on)
     sys.exit(app.exec())
