@@ -1397,9 +1397,18 @@ class OverlayWindow(QWidget):
             "QPushButton { background: transparent; border: none; color: #64748b; }"
             "QPushButton:hover { color: #00d4ff; }"
         )
+        delete_btn = QPushButton("🗑")
+        delete_btn.setFont(QFont("Segoe UI", 9))
+        delete_btn.setFixedSize(24, 24)
+        delete_btn.setToolTip("Delete this session")
+        delete_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #475569; }"
+            "QPushButton:hover { color: #f87171; }"
+        )
         header_row.addWidget(header_lbl, 1)
         header_row.addWidget(count_lbl)
         header_row.addWidget(expand_btn)
+        header_row.addWidget(delete_btn)
         sf_layout.addLayout(header_row)
 
         sep = QFrame()
@@ -1446,6 +1455,7 @@ class OverlayWindow(QWidget):
         }
         self._session_cards[session_id] = card_info
         dive_btn.clicked.connect(lambda: self._run_deep_dive(session_id))
+        delete_btn.clicked.connect(lambda: self._delete_session(session_id))
 
         insert_pos = max(0, self.history_layout.count() - 1)
         self.history_layout.insertWidget(insert_pos, sf)
@@ -1613,6 +1623,21 @@ class OverlayWindow(QWidget):
         )
         worker.start()
         dlg.exec()
+
+    # ── DELETE SESSION ────────────────────────────────────────────────────────
+    def _delete_session(self, session_id: str):
+        """Remove a session card from the UI and purge its entries from disk."""
+        card_info = self._session_cards.pop(session_id, None)
+        if card_info:
+            card_info["frame"].deleteLater()
+        # Remove entries from in-memory history and persist
+        self._saved_history = [e for e in self._saved_history if e.get("session_id") != session_id]
+        self._export_entries = [e for e in self._export_entries if e.get("session_id") != session_id]
+        save_history(self._saved_history)
+        # Show placeholder if history is now empty
+        if all(self.history_layout.itemAt(i).widget() is None
+               for i in range(self.history_layout.count() - 1)):
+            self.history_layout.insertWidget(0, self._make_history_placeholder())
 
     # ── STYLES ────────────────────────────────────────────────────────────────
     def _apply_styles(self):
