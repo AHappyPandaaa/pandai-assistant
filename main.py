@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextEdit,
     QScrollArea, QFrame, QSizeGrip, QSlider, QStackedWidget,
-    QSizePolicy, QTabWidget, QCheckBox
+    QSizePolicy, QTabWidget, QCheckBox, QMenu
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve,
@@ -125,6 +125,22 @@ MODE_LABELS = {
     "sales":      "Client Call",
     "casual":     "Casual",
     "transcript": "Transcript",
+}
+MODE_ICONS = {
+    "general":    "💬",
+    "interview":  "🎯",
+    "technical":  "⚙️",
+    "sales":      "💼",
+    "casual":     "☕",
+    "transcript": "📝",
+}
+MODE_DESCRIPTIONS = {
+    "general":    "All-purpose conversation",
+    "interview":  "STAR-format answers",
+    "technical":  "Precise technical responses",
+    "sales":      "Value-focused client calls",
+    "casual":     "Natural everyday replies",
+    "transcript": "Record only, no AI suggestions",
 }
 MODE_COLORS = {
     "general":    "#00d4ff",
@@ -1047,10 +1063,11 @@ class OverlayWindow(QWidget):
         title = QLabel("PANDAI ASSISTANT")
         title.setObjectName("header_title")
 
-        self.mode_btn = QPushButton(MODE_LABELS[self.mode])
+        self.mode_btn = QPushButton()
         self.mode_btn.setObjectName("mode_btn")
-        self.mode_btn.setFixedHeight(22)
-        self.mode_btn.clicked.connect(self._cycle_mode)
+        self.mode_btn.setFixedHeight(24)
+        self.mode_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.mode_btn.clicked.connect(self._open_mode_menu)
         self._update_mode_btn()
 
         settings_btn = QPushButton("⚙")
@@ -2420,24 +2437,75 @@ class OverlayWindow(QWidget):
             QTimer.singleShot(300, self._start_recording)
 
     # ── MODE ──────────────────────────────────────────────────────────────────
-    def _cycle_mode(self):
-        idx = MODES.index(self.mode)
-        self.mode = MODES[(idx + 1) % len(MODES)]
+    def _set_mode(self, mode_key: str):
+        self.mode = mode_key
         self.config["mode"] = self.mode
         save_config(self.config)
         self._update_mode_btn()
 
+    def _open_mode_menu(self):
+        """Show a styled popup menu listing all modes."""
+        d = (self._theme != "light")
+        bg   = "#0d0e14" if d else "#f8fafc"
+        br   = "rgba(255,255,255,10)" if d else "rgba(0,0,0,8)"
+        fg   = "#94a3b8" if d else "#475569"
+        sel  = "rgba(255,255,255,7)" if d else "rgba(0,0,0,5)"
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: {bg};
+                border: 1px solid {br};
+                border-radius: 12px;
+                padding: 6px;
+                font-family: 'Segoe UI';
+            }}
+            QMenu::item {{
+                padding: 8px 16px;
+                border-radius: 8px;
+                color: {fg};
+                font-size: 10pt;
+            }}
+            QMenu::item:selected {{
+                background: {sel};
+                color: {'#e2e8f0' if d else '#0f172a'};
+            }}
+        """)
+        for key in MODES:
+            icon  = MODE_ICONS[key]
+            label = MODE_LABELS[key]
+            desc  = MODE_DESCRIPTIONS[key]
+            c     = MODE_COLORS[key]
+            action = menu.addAction(f"{icon}  {label}  —  {desc}")
+            action.setCheckable(True)
+            action.setChecked(key == self.mode)
+            if key == self.mode:
+                action.setEnabled(False)   # visually mark active without closing
+                # Tint the active item with its mode colour via a one-off stylesheet
+                menu.setStyleSheet(menu.styleSheet() + f"""
+                    QMenu::item:!enabled {{
+                        color: {c}; background: {c}18;
+                        border-radius: 8px;
+                    }}
+                """)
+            action.triggered.connect(lambda checked, k=key: self._set_mode(k))
+        pos = self.mode_btn.mapToGlobal(
+            self.mode_btn.rect().bottomLeft() + QPoint(0, 4)
+        )
+        menu.exec(pos)
+
     def _update_mode_btn(self):
-        self.mode_btn.setText(MODE_LABELS[self.mode])
+        icon  = MODE_ICONS[self.mode]
+        label = MODE_LABELS[self.mode]
+        self.mode_btn.setText(f"{icon}  {label}  ▾")
         c = MODE_COLORS[self.mode]
         self.mode_btn.setStyleSheet(f"""
             QPushButton {{
-                font-size: 8pt; font-weight: 600;
-                border-radius: 11px; padding: 2px 10px;
-                border: 1px solid {c}99;
-                background: {c}33; color: {c};
+                font-size: 9pt; font-weight: 600;
+                border-radius: 12px; padding: 3px 12px;
+                border: none;
+                background: {c}20; color: {c};
             }}
-            QPushButton:hover {{ background: {c}55; }}
+            QPushButton:hover {{ background: {c}35; }}
         """)
         if not hasattr(self, "topics_frame"):
             return  # UI not yet fully built
