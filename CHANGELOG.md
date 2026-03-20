@@ -1,5 +1,16 @@
 # Changelog
 
+## [Beta 1.0] — Session History, Transcript Mode & Panda Icon
+### Added
+- **Transcript mode** — a new mode that records only the transcript with no AI suggestions, accessible by cycling through modes
+- **Session-based history** — history tab now groups captured points into collapsible sessions (date/time header, point count)
+- **Deep Dive** — select one or more points within a session and click "Deep Dive" to have Claude provide a thorough analysis of the selected topics
+- **Persistent history** — session history is stored in `~/.pandai_history.json` and fully survives app restarts and version updates; sessions from previous runs appear in the History tab on next launch
+- **Panda icon** — app now shows a custom panda face icon in the taskbar and Alt+Tab switcher
+- **Version numbering** — switched to human-readable Beta/1.0 style versioning
+
+---
+
 ## [2026-03-13] — Themes, Hotkey & UI Polish
 ### Added
 - Light and Dark mode toggle in Settings → Appearance
