@@ -1372,9 +1372,9 @@ class OverlayWindow(QWidget):
         sf.setObjectName("history_card")
         sf.setStyleSheet("""
             QFrame#history_card {
-                background: rgba(255,255,255,5);
-                border: 1px solid rgba(255,255,255,18);
-                border-radius: 10px;
+                background: rgba(255,255,255,4);
+                border: 1px solid rgba(255,255,255,8);
+                border-radius: 14px;
             }
         """)
         sf.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -1429,12 +1429,13 @@ class OverlayWindow(QWidget):
         dive_btn.setEnabled(False)
         dive_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(99,102,241,18);
-                border: 1px solid rgba(99,102,241,55);
-                border-radius: 8px; color: #818cf8; padding: 6px 12px;
+                background: rgba(99,102,241,10);
+                border: none;
+                border-radius: 10px; color: #6366f1; padding: 7px 14px;
+                font-size: 9pt;
             }
-            QPushButton:hover:enabled { background: rgba(99,102,241,38); }
-            QPushButton:disabled { color: #334155; border-color: rgba(255,255,255,8); }
+            QPushButton:hover:enabled { background: rgba(99,102,241,22); color: #818cf8; }
+            QPushButton:disabled { color: #1e293b; }
         """)
         sf_layout.addWidget(dive_btn)
 
@@ -1451,11 +1452,13 @@ class OverlayWindow(QWidget):
             "count_lbl":     count_lbl,
             "checkboxes":    [],
             "entries":       [],
+            "point_frames":  [],
             "dive_btn":      dive_btn,
+            "delete_btn":    delete_btn,
         }
         self._session_cards[session_id] = card_info
         dive_btn.clicked.connect(lambda: self._run_deep_dive(session_id))
-        delete_btn.clicked.connect(lambda: self._delete_session(session_id))
+        delete_btn.clicked.connect(lambda: self._delete_selected(session_id))
 
         insert_pos = max(0, self.history_layout.count() - 1)
         self.history_layout.insertWidget(insert_pos, sf)
@@ -1473,11 +1476,11 @@ class OverlayWindow(QWidget):
         pf = QFrame()
         pf.setStyleSheet("""
             QFrame {
-                background: rgba(255,255,255,4);
-                border: 1px solid rgba(255,255,255,10);
-                border-radius: 6px;
+                background: rgba(255,255,255,3);
+                border: none;
+                border-radius: 8px;
             }
-            QFrame:hover { border-color: rgba(0,212,255,30); }
+            QFrame:hover { background: rgba(255,255,255,6); }
         """)
         pf_layout = QVBoxLayout(pf)
         pf_layout.setContentsMargins(8, 6, 8, 6)
@@ -1544,9 +1547,11 @@ class OverlayWindow(QWidget):
             n = sum(1 for c in checkboxes if c.isChecked())
             dive_btn.setText(f"Deep Dive on Selected ({n})")
             dive_btn.setEnabled(n > 0)
+            card_info["delete_btn"].setEnabled(n > 0)
         cb.stateChanged.connect(lambda _: _update_dive())
 
         checkboxes.append(cb)
+        card_info["point_frames"].append(pf)
         n = len(entries_list)
         count_lbl.setText(f"{n} point{'s' if n != 1 else ''}")
         points_layout.addWidget(pf)
@@ -1624,64 +1629,82 @@ class OverlayWindow(QWidget):
         worker.start()
         dlg.exec()
 
-    # ── DELETE SESSION ────────────────────────────────────────────────────────
-    def _delete_session(self, session_id: str):
-        """Remove a session card from the UI and purge its entries from disk."""
-        card_info = self._session_cards.pop(session_id, None)
-        if card_info:
-            card_info["frame"].deleteLater()
-        # Remove entries from in-memory history and persist
-        self._saved_history = [e for e in self._saved_history if e.get("session_id") != session_id]
-        self._export_entries = [e for e in self._export_entries if e.get("session_id") != session_id]
+    # ── DELETE SELECTED POINTS ────────────────────────────────────────────────
+    def _delete_selected(self, session_id: str):
+        """Delete only the checked point cards within a session."""
+        card_info = self._session_cards.get(session_id)
+        if not card_info:
+            return
+        selected_indices = [i for i, cb in enumerate(card_info["checkboxes"]) if cb.isChecked()]
+        if not selected_indices:
+            return
+        selected_entries = [card_info["entries"][i] for i in selected_indices]
+        # Remove widgets and parallel lists in reverse order to preserve indices
+        for i in sorted(selected_indices, reverse=True):
+            card_info["point_frames"][i].deleteLater()
+            card_info["point_frames"].pop(i)
+            card_info["checkboxes"].pop(i)
+            card_info["entries"].pop(i)
+        # Update count label and button states
+        n = len(card_info["entries"])
+        card_info["count_lbl"].setText(f"{n} point{'s' if n != 1 else ''}")
+        card_info["dive_btn"].setText("Deep Dive on Selected (0)")
+        card_info["dive_btn"].setEnabled(False)
+        card_info["delete_btn"].setEnabled(False)
+        # Purge from persistent history using time as unique key per session
+        removed_times = {e.get("time") for e in selected_entries}
+        self._saved_history = [
+            e for e in self._saved_history
+            if not (e.get("session_id") == session_id and e.get("time") in removed_times)
+        ]
+        self._export_entries = [
+            e for e in self._export_entries
+            if not (e.get("session_id") == session_id and e.get("time") in removed_times)
+        ]
         save_history(self._saved_history)
-        # Show placeholder if history is now empty
-        if all(self.history_layout.itemAt(i).widget() is None
-               for i in range(self.history_layout.count() - 1)):
-            self.history_layout.insertWidget(0, self._make_history_placeholder())
+        # If session is now empty, remove its card entirely
+        if not card_info["entries"]:
+            card_info["frame"].deleteLater()
+            self._session_cards.pop(session_id, None)
+            if not self._session_cards:
+                self.history_layout.insertWidget(0, self._make_history_placeholder())
 
     # ── STYLES ────────────────────────────────────────────────────────────────
     def _apply_styles(self):
         d = (self._theme != "light")
 
         # ── colour palette ─────────────────────────────────────────────────
-        c_card      = "rgba(10,11,15,235)"       if d else "rgba(248,250,252,245)"
-        b_main      = "rgba(255,255,255,18)"     if d else "rgba(0,0,0,12)"
-        c_header    = "rgba(255,255,255,8)"      if d else "rgba(0,0,0,4)"
-        c_ctrl      = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,3)"
-        t_title     = "#64748b"
-        t_primary   = "#e2e8f0"                  if d else "#1e293b"
-        t_second    = "#94a3b8"                  if d else "#64748b"
-        t_muted     = "#64748b"                  if d else "#94a3b8"
-        t_dim       = "#475569"                  if d else "#94a3b8"
+        c_card      = "rgba(9,10,14,242)"        if d else "rgba(248,250,252,248)"
+        b_main      = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,8)"
+        c_header    = "rgba(255,255,255,4)"      if d else "rgba(0,0,0,3)"
+        c_ctrl      = "rgba(255,255,255,3)"      if d else "rgba(0,0,0,2)"
+        t_title     = "#475569"                  if d else "#94a3b8"
+        t_primary   = "#e2e8f0"                  if d else "#0f172a"
+        t_second    = "#94a3b8"                  if d else "#475569"
         accent      = "#00d4ff"                  if d else "#0284c7"
-        accent_bg   = "rgba(0,212,255,13)"       if d else "rgba(2,132,199,8)"
-        accent_br   = "rgba(0,212,255,40)"       if d else "rgba(2,132,199,35)"
-        accent_l3   = "rgba(0,212,255,60)"       if d else "rgba(2,132,199,50)"
-        accent_mb   = "rgba(0,212,255,30)"       if d else "rgba(2,132,199,15)"
-        accent_m3   = "rgba(0,212,255,100)"      if d else "rgba(2,132,199,80)"
-        accent_sel  = "rgba(0,212,255,60)"       if d else "rgba(2,132,199,50)"
-        c_input     = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,5)"
-        b_input     = "rgba(255,255,255,18)"     if d else "rgba(0,0,0,14)"
-        c_dropdown  = "#1e2029"                  if d else "#f8fafc"
+        accent_bg   = "rgba(0,212,255,7)"        if d else "rgba(2,132,199,5)"
+        accent_br   = "rgba(0,212,255,30)"       if d else "rgba(2,132,199,25)"
+        accent_l3   = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
+        accent_mb   = "rgba(0,212,255,15)"       if d else "rgba(2,132,199,10)"
+        accent_m3   = "rgba(0,212,255,60)"       if d else "rgba(2,132,199,50)"
+        accent_sel  = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
+        c_input     = "rgba(255,255,255,6)"      if d else "rgba(0,0,0,4)"
+        b_input     = "rgba(255,255,255,12)"     if d else "rgba(0,0,0,10)"
+        c_dropdown  = "#13141a"                  if d else "#f8fafc"
         t_input     = "#e2e8f0"                  if d else "#334155"
-        c_trans     = "rgba(255,255,255,8)"      if d else "rgba(255,255,255,0.8)"
+        c_trans     = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,3)"
         t_trans     = "#cbd5e1"                  if d else "#334155"
-        c_scroll    = "rgba(255,255,255,40)"     if d else "rgba(0,0,0,25)"
-        t_place     = "#475569"                  if d else "#94a3b8"
-        t_section   = "#475569"                  if d else "#64748b"
+        c_scroll    = "rgba(255,255,255,30)"     if d else "rgba(0,0,0,20)"
+        t_place     = "#334155"                  if d else "#94a3b8"
+        t_section   = "#334155"                  if d else "#94a3b8"
         dot_active  = "#00d4ff"                  if d else "#0284c7"
-        dot_inact   = "#475569"                  if d else "#94a3b8"
-        c_resp_txt  = "#cbd5e1"                  if d else "#334155"
-        t_topics    = "#94a3b8"                  if d else "#64748b"
-        groove_bg   = "rgba(255,255,255,25)"     if d else "rgba(0,0,0,18)"
-        tab_bg      = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,4)"
-        tab_br      = "rgba(255,255,255,12)"     if d else "rgba(0,0,0,10)"
-        tab_col     = "#64748b"
-        tab_hov_bg  = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,7)"
-        tab_hov_c   = "#94a3b8"                  if d else "#475569"
-        icon_hov_bg = "rgba(255,255,255,20)"     if d else "rgba(0,0,0,8)"
-        b_sel       = "rgba(99,102,241,40)"      if d else "rgba(99,102,241,50)"
-        c_brief_bg  = "rgba(255,255,255,6)"      if d else "rgba(255,255,255,0.75)"
+        dot_inact   = "#334155"                  if d else "#cbd5e1"
+        c_resp_txt  = "#e2e8f0"                  if d else "#0f172a"
+        t_topics    = "#94a3b8"                  if d else "#475569"
+        groove_bg   = "rgba(255,255,255,15)"     if d else "rgba(0,0,0,12)"
+        icon_hov_bg = "rgba(255,255,255,8)"      if d else "rgba(0,0,0,6)"
+        b_sel       = "rgba(99,102,241,35)"      if d else "rgba(99,102,241,40)"
+        c_brief_bg  = "rgba(255,255,255,4)"      if d else "rgba(255,255,255,0.7)"
         t_brief     = "#cbd5e1"                  if d else "#334155"
         # ───────────────────────────────────────────────────────────────────
 
@@ -1691,27 +1714,26 @@ class OverlayWindow(QWidget):
             #card {{
                 background: {c_card};
                 border: 1px solid {b_main};
-                border-radius: 16px;
+                border-radius: 20px;
             }}
 
             #header {{
                 background: {c_header};
-                border-bottom: 1px solid {b_main};
-                border-top-left-radius: 16px;
-                border-top-right-radius: 16px;
+                border-top-left-radius: 20px;
+                border-top-right-radius: 20px;
             }}
 
             #header_title {{
-                font-size: 9pt; font-weight: 700;
-                letter-spacing: 2px; color: {t_title};
+                font-size: 8pt; font-weight: 600;
+                letter-spacing: 1.5px; color: {t_title};
             }}
 
-            #dot_inactive {{ color: {dot_inact}; font-size: 8pt; }}
-            #dot_active   {{ color: {dot_active}; font-size: 8pt; }}
+            #dot_inactive {{ color: {dot_inact}; font-size: 7pt; }}
+            #dot_active   {{ color: {dot_active}; font-size: 7pt; }}
 
             #mode_btn {{
                 font-size: 8pt; font-weight: 600;
-                border-radius: 11px; padding: 2px 10px;
+                border-radius: 10px; padding: 2px 10px;
                 border: 1px solid {accent_m3};
                 background: {accent_mb}; color: {accent};
             }}
@@ -1723,37 +1745,34 @@ class OverlayWindow(QWidget):
             }}
             #icon_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
 
-            #ctrl_bar {{
-                border-bottom: 1px solid {b_main};
-                background: {c_ctrl};
-            }}
+            #ctrl_bar {{ background: {c_ctrl}; }}
 
             #rec_btn {{
                 background: {c_input};
                 border: 1px solid {b_input};
-                border-radius: 8px; color: {t_primary};
-                font-size: 9pt; font-weight: 600; padding: 0 12px;
+                border-radius: 10px; color: {t_primary};
+                font-size: 9pt; font-weight: 600; padding: 0 14px;
             }}
-            #rec_btn:hover {{ background: {icon_hov_bg}; }}
+            #rec_btn:hover {{ background: rgba(255,255,255,10); }}
             #rec_btn[recording=true] {{
-                background: rgba(239,68,68,25);
-                border-color: rgba(239,68,68,120);
+                background: rgba(239,68,68,18);
+                border-color: rgba(239,68,68,80);
                 color: #fca5a5;
             }}
 
             #pause_btn {{
                 background: {c_input};
                 border: 1px solid {b_input};
-                border-radius: 8px; color: {t_second};
-                font-size: 9pt; font-weight: 600; padding: 0 10px;
+                border-radius: 10px; color: {t_second};
+                font-size: 9pt; font-weight: 600; padding: 0 12px;
             }}
-            #pause_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
+            #pause_btn:hover {{ background: rgba(255,255,255,10); color: {t_primary}; }}
 
             #device_combo {{
                 background: {c_input};
                 border: 1px solid {b_input};
-                border-radius: 6px; color: {t_input}; font-size: 9pt;
-                padding: 2px 6px;
+                border-radius: 8px; color: {t_input}; font-size: 9pt;
+                padding: 2px 8px;
             }}
             #device_combo QAbstractItemView {{
                 background: {c_dropdown}; color: {t_input};
@@ -1761,14 +1780,14 @@ class OverlayWindow(QWidget):
             }}
 
             #briefing_panel {{
-                background: rgba(99,102,241,10);
-                border-bottom: 1px solid rgba(99,102,241,30);
+                background: rgba(99,102,241,6);
+                border-bottom: 1px solid rgba(99,102,241,20);
             }}
             #briefing_edit {{
                 background: {c_brief_bg};
                 border: 1px solid {b_sel};
-                border-radius: 6px; color: {t_brief};
-                font-size: 9pt; padding: 4px 6px;
+                border-radius: 8px; color: {t_brief};
+                font-size: 9pt; padding: 6px 8px;
             }}
             #briefing_toggle_btn {{
                 background: transparent; border: none;
@@ -1777,54 +1796,55 @@ class OverlayWindow(QWidget):
             #briefing_toggle_btn:hover {{ color: #a5b4fc; }}
 
             #banner_loading {{
-                background: rgba(245,158,11,20);
-                border-bottom: 1px solid rgba(245,158,11,60);
-                color: #fcd34d; font-size: 9pt; padding: 5px 12px;
+                background: rgba(245,158,11,12);
+                border-bottom: 1px solid rgba(245,158,11,35);
+                color: #fbbf24; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_ok {{
-                background: rgba(16,185,129,15);
-                border-bottom: 1px solid rgba(16,185,129,50);
-                color: #6ee7b7; font-size: 9pt; padding: 5px 12px;
+                background: rgba(16,185,129,10);
+                border-bottom: 1px solid rgba(16,185,129,35);
+                color: #34d399; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_error {{
-                background: rgba(239,68,68,15);
-                border-bottom: 1px solid rgba(239,68,68,50);
-                color: #fca5a5; font-size: 9pt; padding: 5px 12px;
+                background: rgba(239,68,68,10);
+                border-bottom: 1px solid rgba(239,68,68,35);
+                color: #f87171; font-size: 9pt; padding: 5px 12px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
             #banner_update_frame {{
-                background: rgba(124,58,237,20);
-                border-bottom: 1px solid rgba(124,58,237,60);
+                background: rgba(124,58,237,12);
+                border-bottom: 1px solid rgba(124,58,237,40);
             }}
-            #banner_update_label {{
-                color: #c4b5fd; font-size: 9pt;
-            }}
+            #banner_update_label {{ color: #a78bfa; font-size: 9pt; }}
             #update_now_btn {{
-                background: rgba(124,58,237,180);
-                color: white; font-size: 8pt; font-weight: bold;
-                border: 1px solid rgba(124,58,237,200);
-                border-radius: 4px; padding: 3px 8px;
+                background: rgba(124,58,237,140);
+                color: white; font-size: 8pt; font-weight: 600;
+                border: 1px solid rgba(124,58,237,180);
+                border-radius: 8px; padding: 3px 10px;
             }}
-            #update_now_btn:hover {{ background: rgba(124,58,237,220); }}
-            #update_now_btn:disabled {{ background: rgba(124,58,237,80); color: rgba(255,255,255,120); }}
+            #update_now_btn:hover {{ background: rgba(124,58,237,200); }}
+            #update_now_btn:disabled {{ background: rgba(124,58,237,50); color: rgba(255,255,255,80); }}
 
             #section_frame {{ background: transparent; }}
 
             #section_label {{
-                font-size: 7pt; font-weight: 700;
-                letter-spacing: 2px; color: {t_section};
-                padding: 4px 0 2px 0;
+                font-size: 7pt; font-weight: 600;
+                letter-spacing: 1.5px; color: {t_section};
+                padding: 6px 0 3px 0;
             }}
 
             #transcript_box {{
                 background: {c_trans};
                 border: 1px solid {b_input};
-                border-radius: 8px; color: {t_trans};
-                font-size: 10pt; padding: 4px 6px;
+                border-radius: 10px; color: {t_trans};
+                font-size: 10pt; padding: 6px 8px;
                 selection-background-color: {accent_sel};
             }}
-            QScrollBar:vertical {{ background: transparent; width: 4px; }}
-            QScrollBar::handle:vertical {{ background: {c_scroll}; border-radius: 2px; }}
+
+            QScrollBar:vertical {{ background: transparent; width: 3px; margin: 4px 0; }}
+            QScrollBar::handle:vertical {{
+                background: {c_scroll}; border-radius: 2px; min-height: 20px;
+            }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
             #scroll_area {{ background: transparent; }}
@@ -1832,9 +1852,9 @@ class OverlayWindow(QWidget):
 
             #response_frame {{
                 background: {accent_bg};
-                border: 1px solid {accent_br};
-                border-radius: 10px;
-                border-left: 3px solid {accent};
+                border: none;
+                border-left: 2px solid {accent_br};
+                border-radius: 0 10px 10px 0;
             }}
 
             #topics_frame {{ background: transparent; }}
@@ -1843,43 +1863,42 @@ class OverlayWindow(QWidget):
             #placeholder_text {{ color: {t_place}; font-size: 10pt; font-style: italic; }}
 
             QLabel#response_text {{
-                color: {c_resp_txt}; font-size: 10pt;
-                line-height: 1.6;
+                color: {c_resp_txt}; font-size: 10pt; line-height: 1.6;
             }}
 
             QLabel {{ color: {t_topics}; }}
 
             QSlider::groove:horizontal {{
-                height: 3px; background: {groove_bg}; border-radius: 2px;
+                height: 2px; background: {groove_bg}; border-radius: 1px;
             }}
             QSlider::handle:horizontal {{
-                width: 12px; height: 12px; margin: -5px 0;
-                background: {accent}; border-radius: 6px;
+                width: 10px; height: 10px; margin: -4px 0;
+                background: {accent}; border-radius: 5px;
             }}
 
             QTabWidget#main_tabs::pane {{
-                border: none;
+                border: none; border-top: 1px solid {b_main};
+                background: transparent;
+            }}
+            QTabWidget#main_tabs > QTabBar {{
                 background: transparent;
             }}
             QTabWidget#main_tabs > QTabBar::tab {{
-                background: {tab_bg};
-                border: 1px solid {tab_br};
-                border-bottom: none;
-                border-radius: 6px 6px 0 0;
-                padding: 5px 14px;
+                background: transparent;
+                border: none;
+                border-bottom: 2px solid transparent;
+                padding: 7px 18px;
                 margin-right: 2px;
-                color: {tab_col};
-                font-size: 9pt;
-                font-weight: 600;
+                color: {t_section};
+                font-size: 9pt; font-weight: 600;
             }}
             QTabWidget#main_tabs > QTabBar::tab:selected {{
-                background: {accent_bg};
-                border-color: {accent_l3};
+                border-bottom-color: {accent};
                 color: {accent};
             }}
             QTabWidget#main_tabs > QTabBar::tab:hover:!selected {{
-                background: {tab_hov_bg};
-                color: {tab_hov_c};
+                color: {t_second};
+                border-bottom-color: {accent_br};
             }}
         """)
 
@@ -2229,11 +2248,11 @@ class OverlayWindow(QWidget):
                 chip.setFont(QFont("Segoe UI", 9))
                 chip.setStyleSheet("""
                     QPushButton {
-                        background: rgba(124,58,237,20); border: 1px solid rgba(124,58,237,80);
-                        border-radius: 12px; color: #a78bfa;
-                        padding: 5px 12px; text-align: left;
+                        background: rgba(99,102,241,10); border: none;
+                        border-radius: 14px; color: #818cf8;
+                        padding: 6px 14px; text-align: left;
                     }
-                    QPushButton:hover { background: rgba(124,58,237,50); }
+                    QPushButton:hover { background: rgba(99,102,241,22); color: #a5b4fc; }
                 """)
                 chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
                 chip.clicked.connect(lambda _, text=q: QApplication.clipboard().setText(text))
@@ -2265,23 +2284,27 @@ class OverlayWindow(QWidget):
             copy_btn.setFont(QFont("Segoe UI", 9))
             copy_btn.setStyleSheet("""
                 QPushButton {
-                    background: transparent; border: 1px solid rgba(255,255,255,25);
-                    border-radius: 10px; color: #64748b; padding: 3px 10px;
-                    max-width: 60px;
+                    background: transparent; border: none;
+                    border-radius: 8px; color: #475569; padding: 3px 10px;
+                    max-width: 60px; font-size: 8pt;
                 }
-                QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }
+                QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
             """)
             def _do_copy(btn=copy_btn, t=text):
                 QApplication.clipboard().setText(t)
-                btn.setText("✓ Copied!")
-                btn.setStyleSheet(btn.styleSheet() + "QPushButton { color: #10b981; border-color: #10b981; }")
+                btn.setText("✓ Copied")
+                btn.setStyleSheet("""
+                    QPushButton { background: transparent; border: none;
+                    border-radius: 8px; color: #34d399; padding: 3px 10px;
+                    max-width: 70px; font-size: 8pt; }
+                """)
                 QTimer.singleShot(1500, lambda: (btn.setText("Copy"), btn.setStyleSheet("""
                     QPushButton {
-                        background: transparent; border: 1px solid rgba(255,255,255,25);
-                        border-radius: 10px; color: #64748b; padding: 3px 10px;
-                        max-width: 60px;
+                        background: transparent; border: none;
+                        border-radius: 8px; color: #475569; padding: 3px 10px;
+                        max-width: 60px; font-size: 8pt;
                     }
-                    QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }
+                    QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
                 """)))
             copy_btn.clicked.connect(_do_copy)
             self.response_layout.addWidget(copy_btn)
@@ -2292,11 +2315,11 @@ class OverlayWindow(QWidget):
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background: rgba(255,255,255,8);
-                border: 1px solid rgba(255,255,255,18);
-                border-radius: 8px;
+                background: rgba(255,255,255,5);
+                border: none;
+                border-radius: 10px;
             }
-            QFrame:hover { background: rgba(255,255,255,15); border-color: rgba(0,212,255,60); }
+            QFrame:hover { background: rgba(255,255,255,9); }
         """)
         card.setSizePolicy(
             QSizePolicy.Policy.Expanding,
