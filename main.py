@@ -10,7 +10,6 @@ import threading
 import queue
 import time
 import json
-import re
 import numpy as np
 import sounddevice as sd
 import anthropic
@@ -29,8 +28,67 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor, QPainter, QBrush, QPen, QFont, QFontDatabase,
-    QLinearGradient, QPalette, QCursor, QIcon
+    QLinearGradient, QPalette, QCursor, QIcon, QPixmap
 )
+
+# ── PANDA ICON ───────────────────────────────────────────────────────────────
+def _make_panda_icon() -> QIcon:
+    """Draw a panda face programmatically and return it as a QIcon."""
+    size = 64
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    black = QColor(30, 30, 30)
+    white = QColor(245, 245, 245)
+    pink  = QColor(220, 160, 160)
+
+    # --- ears (black circles, behind head) ---
+    p.setBrush(QBrush(black))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(2,  2, 18, 18)   # left ear
+    p.drawEllipse(44, 2, 18, 18)   # right ear
+
+    # --- inner ear (pink) ---
+    p.setBrush(QBrush(pink))
+    p.drawEllipse(6,  5, 10, 10)
+    p.drawEllipse(48, 5, 10, 10)
+
+    # --- head (white circle) ---
+    p.setBrush(QBrush(white))
+    p.drawEllipse(6, 10, 52, 52)
+
+    # --- eye patches (black ovals) ---
+    p.setBrush(QBrush(black))
+    p.drawEllipse(10, 20, 18, 14)  # left patch
+    p.drawEllipse(36, 20, 18, 14)  # right patch
+
+    # --- eyes (white dots) ---
+    p.setBrush(QBrush(white))
+    p.drawEllipse(15, 23, 7, 7)
+    p.drawEllipse(41, 23, 7, 7)
+
+    # --- pupils (black dots) ---
+    p.setBrush(QBrush(black))
+    p.drawEllipse(17, 25, 4, 4)
+    p.drawEllipse(43, 25, 4, 4)
+
+    # --- nose ---
+    p.setBrush(QBrush(black))
+    p.drawEllipse(27, 38, 10, 7)
+
+    # --- mouth ---
+    p.setPen(QPen(black, 2))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    from PyQt6.QtCore import QRect
+    p.drawArc(QRect(22, 42, 10, 8), 180 * 16, -180 * 16)  # left curve
+    p.drawArc(QRect(32, 42, 10, 8), 0 * 16,   -180 * 16)  # right curve
+
+    p.end()
+    return QIcon(px)
+
 
 # ── HOTKEY SIGNALER ───────────────────────────────────────────────────────────
 class _HotkeySignaler(QObject):
@@ -59,20 +117,22 @@ WHISPER_COMPUTE = "float16"
 CONFIG_FILE  = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".pandai_history.json")
 
-MODES = ["general", "interview", "technical", "sales", "casual"]
+MODES = ["general", "interview", "technical", "sales", "casual", "transcript"]
 MODE_LABELS = {
-    "general":   "General",
-    "interview": "Interview",
-    "technical": "Technical",
-    "sales":     "Client Call",
-    "casual":    "Casual",
+    "general":    "General",
+    "interview":  "Interview",
+    "technical":  "Technical",
+    "sales":      "Client Call",
+    "casual":     "Casual",
+    "transcript": "Transcript",
 }
 MODE_COLORS = {
-    "general":   "#00d4ff",
-    "interview": "#10b981",
-    "technical": "#f59e0b",
-    "sales":     "#a78bfa",
-    "casual":    "#f97316",
+    "general":    "#00d4ff",
+    "interview":  "#10b981",
+    "technical":  "#f59e0b",
+    "sales":      "#a78bfa",
+    "casual":     "#f97316",
+    "transcript": "#6366f1",
 }
 SYSTEM_PROMPTS = {
     "general": (
@@ -179,23 +239,19 @@ class WhisperLoader(QThread):
     done = pyqtSignal(object, str)   # model, error
     status = pyqtSignal(str)         # progress messages
 
-    def __init__(self, model_size="medium"):
-        super().__init__()
-        self.model_size = model_size
-
     def run(self):
         # Check for NVIDIA GPU first — skip CUDA entirely if not present
         has_nvidia = _nvidia_gpu_available()
 
         if has_nvidia:
-            self.status.emit(f"⏳  Loading Whisper {self.model_size} on GPU (CUDA)...")
+            self.status.emit("⏳  Loading Whisper on GPU (CUDA)...")
             try:
                 _add_cuda_dll_paths()
             except Exception as e:
                 print(f"DLL path warning: {e}")
 
             try:
-                model = WhisperModel(self.model_size, device="cuda", compute_type="float16")
+                model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
                 self.done.emit(model, "")
                 return
             except Exception as e:
@@ -203,8 +259,8 @@ class WhisperLoader(QThread):
 
         # CPU fallback — either no NVIDIA GPU or CUDA failed
         try:
-            self.status.emit(f"⏳  Loading Whisper {self.model_size} on CPU...")
-            model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+            self.status.emit("⏳  Loading Whisper on CPU...")
+            model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
             msg = "" if has_nvidia else "No NVIDIA GPU detected — running on CPU"
             self.done.emit(model, msg)
         except Exception as e:
@@ -476,9 +532,8 @@ class TranscribeWorker(QThread):
 
 # ── CLAUDE WORKER ─────────────────────────────────────────────────────────────
 class ClaudeWorker(QThread):
-    result      = pyqtSignal(dict)
-    error       = pyqtSignal(str)
-    stream_text = pyqtSignal(str)   # progressive response text while streaming
+    result = pyqtSignal(dict)
+    error  = pyqtSignal(str)
 
     def __init__(self, api_key, mode, transcript, briefing="", custom_prompts=None):
         super().__init__()
@@ -495,29 +550,14 @@ class ClaudeWorker(QThread):
             context = self.transcript[-800:]
             if self.briefing:
                 context = f"Session context:\n{self.briefing}\n\nTranscript:\n{context}"
-
-            full_text = ""
-            last_streamed = ""
-            with client.messages.stream(
+            msg = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=800,
                 system=system,
                 messages=[{"role": "user", "content": f'Transcript:\n"{context}"'}],
-            ) as stream:
-                for chunk in stream.text_stream:
-                    full_text += chunk
-                    # Progressively extract the "response" field value as it arrives
-                    m = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', full_text)
-                    if m:
-                        partial = (m.group(1)
-                                   .replace('\\"', '"')
-                                   .replace('\\\\', '\\')
-                                   .replace('\\n', '\n'))
-                        if partial != last_streamed:
-                            self.stream_text.emit(partial)
-                            last_streamed = partial
-
-            raw = full_text.strip().replace("```json", "").replace("```", "").strip()
+            )
+            raw = msg.content[0].text.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
             data = json.loads(raw)
             self.result.emit(data)
         except json.JSONDecodeError:
@@ -528,12 +568,51 @@ class ClaudeWorker(QThread):
 # ── SETTINGS DIALOG ───────────────────────────────────────────────────────────
 from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QGridLayout, QGroupBox, QScrollArea as _QScrollArea
 
+class DeepDiveWorker(QThread):
+    """Sends selected history points to Claude for a deeper analysis."""
+    result = pyqtSignal(str)
+    error  = pyqtSignal(str)
+
+    def __init__(self, api_key: str, entries: list):
+        super().__init__()
+        self.api_key = api_key
+        self.entries = entries
+
+    def run(self):
+        try:
+            client = anthropic.Anthropic(api_key=self.api_key)
+            parts = []
+            for e in self.entries:
+                topic_names = ", ".join(t.get("title", "") for t in e.get("topics", []))
+                parts.append(
+                    f"Snippet: {e.get('snippet', '')}\n"
+                    f"Topics: {topic_names}\n"
+                    f"Context: {e.get('response', '')}"
+                )
+            context = "\n\n---\n\n".join(parts)
+            system = (
+                "You are an expert analyst reviewing selected conversation points from a meeting or interview. "
+                "Provide a thorough deep dive: expand on the key topics, identify patterns or themes, "
+                "suggest follow-up actions or questions, and surface any insights worth revisiting. "
+                "Use clear markdown-style headers for each section."
+            )
+            msg = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1500,
+                system=system,
+                messages=[{"role": "user", "content": f"Analyze these conversation points:\n\n{context}"}],
+            )
+            self.result.emit(msg.content[0].text.strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = dict(config)
         self.setWindowTitle("PandAI Assistant — Settings")
-        self.setFixedSize(500, 720)
+        self.setFixedSize(500, 660)
         self._apply_theme_styles()
         self._build_ui()
 
@@ -710,7 +789,7 @@ class SettingsDialog(QDialog):
         priv_layout = QVBoxLayout(priv_group)
         self.stealth_check = QCheckBox("Stealth mode — hide from screen sharing")
         self.stealth_check.setChecked(self.config.get("stealth_mode", False))
-        stealth_hint = QLabel("Window stays visible to you but won't appear in screen captures or recordings (Windows 10 2004+). The window is always hidden from Alt+Tab regardless of this setting.")
+        stealth_hint = QLabel("Window stays visible to you but won't appear in screen captures or recordings (Windows 10 2004+)")
         stealth_hint.setStyleSheet("color: #475569; font-size: 9pt;")
         stealth_hint.setWordWrap(True)
         priv_layout.addWidget(self.stealth_check)
@@ -767,29 +846,6 @@ class SettingsDialog(QDialog):
         )
         prompt_layout.addWidget(self.prompt_edit)
         layout.addWidget(prompt_group)
-
-        # Transcription model
-        model_group = QGroupBox("Transcription Model")
-        model_layout = QVBoxLayout(model_group)
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Model:"))
-        self.model_combo = QComboBox()
-        self.model_combo.addItem("tiny — Fastest, lowest accuracy", "tiny")
-        self.model_combo.addItem("base — Fast, good for slow hardware", "base")
-        self.model_combo.addItem("small — Balanced (good for CPU)", "small")
-        self.model_combo.addItem("medium — High accuracy (recommended for GPU)", "medium")
-        self.model_combo.addItem("large-v3 — Best accuracy (GPU required)", "large-v3")
-        saved_model = self.config.get("whisper_model", "medium")
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == saved_model:
-                self.model_combo.setCurrentIndex(i)
-        model_row.addWidget(self.model_combo, 1)
-        model_layout.addLayout(model_row)
-        model_hint = QLabel("Changing the model will reload Whisper when you save. large-v3 requires a GPU with ≥4 GB VRAM.")
-        model_hint.setStyleSheet("color: #475569; font-size: 9pt;")
-        model_hint.setWordWrap(True)
-        model_layout.addWidget(model_hint)
-        layout.addWidget(model_group)
 
         # Appearance
         appear_group = QGroupBox("Appearance")
@@ -898,9 +954,8 @@ class SettingsDialog(QDialog):
         self.config["transcription_sensitivity"] = self.sens_slider.value()
         # Save custom prompts, stripping empty entries
         self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
-        self.config["custom_prompts"]  = {k: v for k, v in self._custom_prompts.items() if v.strip()}
-        self.config["theme"]           = self.theme_combo.currentData()
-        self.config["whisper_model"]   = self.model_combo.currentData()
+        self.config["custom_prompts"] = {k: v for k, v in self._custom_prompts.items() if v.strip()}
+        self.config["theme"]          = self.theme_combo.currentData()
         self.accept()
 
     def get_config(self):
@@ -921,10 +976,15 @@ class OverlayWindow(QWidget):
         self._drag_pos    = None
         self._export_entries = []   # list of suggestion dicts for session export
         self._saved_history  = load_history()  # persisted across sessions
+        import datetime as _dt
+        _now = _dt.datetime.now()
+        self._session_id    = _now.strftime("%Y%m%d_%H%M%S")
+        self._session_label = _now.strftime("%A %d %b %Y, %I:%M %p")
+        self._session_cards  = {}   # session_id -> card info dict
+        self._deep_dive_workers = []
         self._paused = False
         self._briefing = ""           # pre-session context fed to Claude
         self._display_transcript = "" # labelled transcript for the UI box
-        self._stream_label = None     # QLabel reused during streaming, cleared on full render
         # Per-source dedup state for speaker labels
         self._last_words_mic = []
         self._last_words_sys = []
@@ -1083,38 +1143,6 @@ class OverlayWindow(QWidget):
         bp_header.addStretch()
         bp_header.addWidget(self._briefing_toggle)
         bp_layout.addLayout(bp_header)
-
-        # Template row (shown/hidden with the briefing edit)
-        self._template_row = QWidget()
-        tpl_row_layout = QHBoxLayout(self._template_row)
-        tpl_row_layout.setContentsMargins(0, 0, 0, 0)
-        tpl_row_layout.setSpacing(4)
-        self._template_combo = QComboBox()
-        self._template_combo.setFixedHeight(22)
-        _tpl_btn_style = (
-            "QPushButton { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);"
-            " border-radius: 4px; color: #94a3b8; padding: 2px 8px; font-size: 9pt; }"
-            "QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }"
-        )
-        self._save_tpl_btn = QPushButton("💾 Save")
-        self._save_tpl_btn.setFixedHeight(22)
-        self._save_tpl_btn.setStyleSheet(_tpl_btn_style)
-        self._save_tpl_btn.setToolTip("Save current text as a named template")
-        self._del_tpl_btn = QPushButton("🗑")
-        self._del_tpl_btn.setFixedHeight(22)
-        self._del_tpl_btn.setFixedWidth(28)
-        self._del_tpl_btn.setStyleSheet(_tpl_btn_style)
-        self._del_tpl_btn.setToolTip("Delete selected template")
-        tpl_row_layout.addWidget(self._template_combo, 1)
-        tpl_row_layout.addWidget(self._save_tpl_btn)
-        tpl_row_layout.addWidget(self._del_tpl_btn)
-        self._template_combo.currentIndexChanged.connect(self._on_template_selected)
-        self._save_tpl_btn.clicked.connect(self._save_template)
-        self._del_tpl_btn.clicked.connect(self._delete_template)
-        self._template_row.hide()
-        bp_layout.addWidget(self._template_row)
-        self._load_template_combo()
-
         self._briefing_edit = QTextEdit()
         self._briefing_edit.setObjectName("briefing_edit")
         self._briefing_edit.setPlaceholderText("Paste job description, meeting agenda, client background… used as context for every suggestion.")
@@ -1270,157 +1298,321 @@ class OverlayWindow(QWidget):
         return lbl
 
     def _load_saved_history(self):
-        """Populate history tab with entries persisted from previous sessions."""
+        """Group saved history by session_id and build session cards."""
         if not self._saved_history:
             return
-        # Show a divider so users know these are past sessions
-        divider = QLabel("— Previous Sessions —")
-        divider.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        divider.setStyleSheet("color: #475569; font-size: 8pt; padding: 4px 0;")
-        insert_pos = max(0, self.history_layout.count() - 1)
-        self.history_layout.insertWidget(insert_pos, divider)
-        # Remove placeholder if present
+        # Remove placeholder
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
             if first and first.objectName() == "placeholder_text":
                 self.history_layout.removeWidget(first)
                 first.deleteLater()
-        for entry in self._saved_history[-20:]:
-            data = {
-                "response":  entry.get("response", ""),
-                "topics":    entry.get("topics", []),
-                "followups": entry.get("followups", []),
-            }
-            self._add_history_entry(data, entry.get("snippet", ""),
-                                    time_str=entry.get("time", ""), persist=False)
+        # Group entries by session_id preserving order
+        from collections import OrderedDict
+        sessions = OrderedDict()
+        for entry in self._saved_history:
+            sid = entry.get("session_id", "legacy")
+            if sid not in sessions:
+                sessions[sid] = {
+                    "label": entry.get("session_label", "Previous Session"),
+                    "entries": [],
+                }
+            sessions[sid]["entries"].append(entry)
+        # Build a card per past session (skip current session — built live)
+        for sid, sdata in sessions.items():
+            if sid == self._session_id:
+                continue
+            for entry in sdata["entries"]:
+                self._add_history_entry(
+                    {"response": entry.get("response", ""),
+                     "topics":   entry.get("topics", []),
+                     "followups": entry.get("followups", [])},
+                    entry.get("snippet", ""),
+                    time_str=entry.get("time", ""),
+                    persist=False,
+                    session_id=sid,
+                    session_label=sdata["label"],
+                )
 
-    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
-        """Add a collapsed history card for a past suggestion."""
+    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "",
+                           persist: bool = True, session_id: str = None,
+                           session_label: str = None):
+        """Add a point to the appropriate session card, creating it if needed."""
         import datetime
+        sid    = session_id    or self._session_id
+        slabel = session_label or self._session_label
         entry = {
-            "time": time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "snippet": snippet,
+            "session_id":    sid,
+            "session_label": slabel,
+            "time":     time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "snippet":  snippet,
             "response": data.get("response", ""),
-            "topics": data.get("topics", []),
+            "topics":   data.get("topics", []),
             "followups": data.get("followups", []),
         }
         self._export_entries.append(entry)
         if persist:
             self._saved_history.append(entry)
             save_history(self._saved_history)
-        # Remove placeholder if present
+        # Remove placeholder if still present
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
             if first and first.objectName() == "placeholder_text":
                 self.history_layout.removeWidget(first)
                 first.deleteLater()
+        # Create session card on first use
+        if sid not in self._session_cards:
+            self._build_session_card(sid, slabel)
+        self._build_point_card(entry, self._session_cards[sid])
 
-        # Build card
-        card = QFrame()
-        card.setStyleSheet("""
+    # ── SESSION CARD ──────────────────────────────────────────────────────────
+    def _build_session_card(self, session_id: str, session_label: str):
+        """Create a collapsible session container in the history tab."""
+        sf = QFrame()
+        sf.setObjectName("history_card")
+        sf.setStyleSheet("""
             QFrame#history_card {
-                background: rgba(255,255,255,6);
-                border: 1px solid rgba(255,255,255,15);
-                border-radius: 8px;
-            }
-            QFrame#history_card:hover {
-                border-color: rgba(0,212,255,50);
-                background: rgba(255,255,255,10);
+                background: rgba(255,255,255,5);
+                border: 1px solid rgba(255,255,255,18);
+                border-radius: 10px;
             }
         """)
-        card.setObjectName("history_card")
-        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 8, 10, 8)
-        card_layout.setSpacing(4)
+        sf.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        sf_layout = QVBoxLayout(sf)
+        sf_layout.setContentsMargins(10, 8, 10, 8)
+        sf_layout.setSpacing(4)
 
-        # Header row: snippet + expand toggle
+        # Header row
         header_row = QHBoxLayout()
-        snippet_lbl = QLabel(snippet[:80] + ("…" if len(snippet) > 80 else ""))
-        snippet_lbl.setFont(QFont("Segoe UI", 9))
-        snippet_lbl.setStyleSheet("color: #64748b; font-style: italic;")
-        snippet_lbl.setWordWrap(False)
+        header_lbl = QLabel(f"📅  {session_label}")
+        header_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        header_lbl.setStyleSheet("color: #94a3b8;")
+        count_lbl = QLabel("0 points")
+        count_lbl.setFont(QFont("Segoe UI", 8))
+        count_lbl.setStyleSheet("color: #475569;")
+        expand_btn = QPushButton("▾")
+        expand_btn.setFont(QFont("Segoe UI", 9))
+        expand_btn.setFixedSize(24, 24)
+        expand_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #64748b; }"
+            "QPushButton:hover { color: #00d4ff; }"
+        )
+        header_row.addWidget(header_lbl, 1)
+        header_row.addWidget(count_lbl)
+        header_row.addWidget(expand_btn)
+        sf_layout.addLayout(header_row)
 
-        toggle_btn = QPushButton("▾ Show")
-        toggle_btn.setFont(QFont("Segoe UI", 8))
-        toggle_btn.setStyleSheet("""
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: rgba(255,255,255,8);")
+        sf_layout.addWidget(sep)
+
+        # Collapsible points container
+        points_widget = QWidget()
+        points_layout = QVBoxLayout(points_widget)
+        points_layout.setContentsMargins(0, 4, 0, 4)
+        points_layout.setSpacing(4)
+        sf_layout.addWidget(points_widget)
+
+        # Deep Dive button
+        dive_btn = QPushButton("Deep Dive on Selected (0)")
+        dive_btn.setFont(QFont("Segoe UI", 9))
+        dive_btn.setEnabled(False)
+        dive_btn.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                border: 1px solid rgba(255,255,255,20);
-                border-radius: 6px;
-                color: #64748b;
-                padding: 2px 8px;
+                background: rgba(99,102,241,18);
+                border: 1px solid rgba(99,102,241,55);
+                border-radius: 8px; color: #818cf8; padding: 6px 12px;
             }
-            QPushButton:hover { color: #00d4ff; border-color: rgba(0,212,255,60); }
+            QPushButton:hover:enabled { background: rgba(99,102,241,38); }
+            QPushButton:disabled { color: #334155; border-color: rgba(255,255,255,8); }
         """)
-        toggle_btn.setFixedWidth(65)
-        header_row.addWidget(snippet_lbl, 1)
-        header_row.addWidget(toggle_btn)
-        card_layout.addLayout(header_row)
+        sf_layout.addWidget(dive_btn)
 
-        # Collapsible detail area
-        detail_widget = QWidget()
-        detail_widget.setVisible(False)
-        detail_layout = QVBoxLayout(detail_widget)
-        detail_layout.setContentsMargins(0, 6, 0, 0)
-        detail_layout.setSpacing(6)
+        def _toggle():
+            v = not points_widget.isVisible()
+            points_widget.setVisible(v)
+            dive_btn.setVisible(v)
+            expand_btn.setText("▴" if v else "▾")
+        expand_btn.clicked.connect(_toggle)
 
-        # Response
-        resp_lbl = QLabel(data.get("response", ""))
-        resp_lbl.setFont(QFont("Segoe UI", 10))
-        resp_lbl.setStyleSheet("color: #cbd5e1;")
-        resp_lbl.setWordWrap(True)
-        resp_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        card_info = {
+            "frame":         sf,
+            "points_layout": points_layout,
+            "count_lbl":     count_lbl,
+            "checkboxes":    [],
+            "entries":       [],
+            "dive_btn":      dive_btn,
+        }
+        self._session_cards[session_id] = card_info
+        dive_btn.clicked.connect(lambda: self._run_deep_dive(session_id))
 
-        copy_btn = QPushButton("Copy response")
-        copy_btn.setFont(QFont("Segoe UI", 8))
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: 1px solid rgba(255,255,255,20);
-                border-radius: 6px; color: #64748b;
-                padding: 2px 8px; max-width: 100px;
-            }
-            QPushButton:hover { border-color: #00d4ff; color: #00d4ff; }
-        """)
-        response_text = data.get("response", "")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(response_text))
-
-        detail_layout.addWidget(resp_lbl)
-        detail_layout.addWidget(copy_btn)
-
-        # Topics
-        for t in data.get("topics", []):
-            t_row = QHBoxLayout()
-            t_icon = QLabel(t.get("icon", "🔗"))
-            t_icon.setFont(QFont("Segoe UI", 10))
-            t_icon.setFixedWidth(20)
-            t_title = QLabel(f"<b>{t.get('title','')}</b> — {t.get('detail','')}")
-            t_title.setFont(QFont("Segoe UI", 9))
-            t_title.setStyleSheet("color: #94a3b8;")
-            t_title.setWordWrap(True)
-            t_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            t_row.addWidget(t_icon)
-            t_row.addWidget(t_title, 1)
-            detail_layout.addLayout(t_row)
-
-        card_layout.addWidget(detail_widget)
-
-        # Toggle logic
-        def toggle():
-            visible = not detail_widget.isVisible()
-            detail_widget.setVisible(visible)
-            toggle_btn.setText("▴ Hide" if visible else "▾ Show")
-        toggle_btn.clicked.connect(toggle)
-
-        # Insert before the stretch at the end
         insert_pos = max(0, self.history_layout.count() - 1)
-        self.history_layout.insertWidget(insert_pos, card)
+        self.history_layout.insertWidget(insert_pos, sf)
 
-        # Scroll history to bottom
+    # ── POINT CARD ────────────────────────────────────────────────────────────
+    def _build_point_card(self, entry: dict, card_info: dict):
+        """Add an individual captured point to a session card."""
+        checkboxes   = card_info["checkboxes"]
+        dive_btn     = card_info["dive_btn"]
+        points_layout = card_info["points_layout"]
+        entries_list  = card_info["entries"]
+        count_lbl     = card_info["count_lbl"]
+        entries_list.append(entry)
+
+        pf = QFrame()
+        pf.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,4);
+                border: 1px solid rgba(255,255,255,10);
+                border-radius: 6px;
+            }
+            QFrame:hover { border-color: rgba(0,212,255,30); }
+        """)
+        pf_layout = QVBoxLayout(pf)
+        pf_layout.setContentsMargins(8, 6, 8, 6)
+        pf_layout.setSpacing(3)
+
+        top_row = QHBoxLayout()
+        cb = QCheckBox()
+        cb.setStyleSheet("QCheckBox { spacing: 4px; }")
+
+        snippet = entry.get("snippet", "")
+        snip_lbl = QLabel(snippet[:60] + ("…" if len(snippet) > 60 else ""))
+        snip_lbl.setFont(QFont("Segoe UI", 9))
+        snip_lbl.setStyleSheet("color: #64748b; font-style: italic;")
+
+        time_str = entry.get("time", "")
+        time_lbl = QLabel(time_str[11:16] if len(time_str) >= 16 else time_str)
+        time_lbl.setFont(QFont("Segoe UI", 8))
+        time_lbl.setStyleSheet("color: #334155;")
+
+        detail_toggle = QPushButton("▾")
+        detail_toggle.setFont(QFont("Segoe UI", 8))
+        detail_toggle.setFixedSize(20, 20)
+        detail_toggle.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #475569; }"
+            "QPushButton:hover { color: #00d4ff; }"
+        )
+        top_row.addWidget(cb)
+        top_row.addWidget(snip_lbl, 1)
+        top_row.addWidget(time_lbl)
+        top_row.addWidget(detail_toggle)
+        pf_layout.addLayout(top_row)
+
+        # Collapsible detail
+        detail_w = QWidget()
+        detail_w.setVisible(False)
+        dl = QVBoxLayout(detail_w)
+        dl.setContentsMargins(24, 4, 0, 0)
+        dl.setSpacing(3)
+
+        if entry.get("response"):
+            resp_lbl = QLabel(entry["response"])
+            resp_lbl.setFont(QFont("Segoe UI", 9))
+            resp_lbl.setStyleSheet("color: #cbd5e1;")
+            resp_lbl.setWordWrap(True)
+            resp_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            dl.addWidget(resp_lbl)
+
+        for t in entry.get("topics", []):
+            t_lbl = QLabel(f"{t.get('icon','🔗')} <b>{t.get('title','')}</b> — {t.get('detail','')}")
+            t_lbl.setFont(QFont("Segoe UI", 8))
+            t_lbl.setStyleSheet("color: #94a3b8;")
+            t_lbl.setWordWrap(True)
+            dl.addWidget(t_lbl)
+
+        pf_layout.addWidget(detail_w)
+
+        def _toggle_detail():
+            v = not detail_w.isVisible()
+            detail_w.setVisible(v)
+            detail_toggle.setText("▴" if v else "▾")
+        detail_toggle.clicked.connect(_toggle_detail)
+
+        def _update_dive():
+            n = sum(1 for c in checkboxes if c.isChecked())
+            dive_btn.setText(f"Deep Dive on Selected ({n})")
+            dive_btn.setEnabled(n > 0)
+        cb.stateChanged.connect(lambda _: _update_dive())
+
+        checkboxes.append(cb)
+        n = len(entries_list)
+        count_lbl.setText(f"{n} point{'s' if n != 1 else ''}")
+        points_layout.addWidget(pf)
+
         QTimer.singleShot(50, lambda: self.history_scroll.verticalScrollBar().setValue(
             self.history_scroll.verticalScrollBar().maximum()
         ))
+
+    # ── DEEP DIVE ─────────────────────────────────────────────────────────────
+    def _run_deep_dive(self, session_id: str):
+        card_info = self._session_cards.get(session_id)
+        if not card_info:
+            return
+        selected = [
+            e for e, cb in zip(card_info["entries"], card_info["checkboxes"])
+            if cb.isChecked()
+        ]
+        if not selected:
+            return
+        api_key = self.config.get("api_key", "")
+        if not api_key:
+            return
+
+        dark = (self._theme != "light")
+        dlg_bg = "#0d0e12" if dark else "#f8fafc"
+        dlg_fg = "#e2e8f0" if dark else "#1e293b"
+        txt_bg = "#1e2029" if dark else "#ffffff"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Deep Dive Analysis")
+        dlg.setFixedSize(500, 540)
+        dlg.setStyleSheet(f"""
+            QDialog {{ background: {dlg_bg}; font-family: Segoe UI; }}
+            QTextEdit {{
+                background: {txt_bg}; color: {dlg_fg};
+                border: 1px solid rgba(99,102,241,40);
+                border-radius: 8px; font-size: 10pt; padding: 8px;
+            }}
+            QPushButton {{
+                background: rgba(99,102,241,30);
+                border: 1px solid rgba(99,102,241,80);
+                border-radius: 8px; padding: 8px 16px;
+                color: #818cf8; font-size: 10pt; font-weight: bold;
+            }}
+            QPushButton:hover {{ background: rgba(99,102,241,50); }}
+        """)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(16, 12, 16, 12)
+        v.setSpacing(10)
+        title_lbl = QLabel("🔬  Deep Dive Analysis")
+        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
+        title_lbl.setStyleSheet(f"color: {dlg_fg};")
+        v.addWidget(title_lbl)
+        result_box = QTextEdit()
+        result_box.setReadOnly(True)
+        result_box.setPlainText("Analyzing selected topics…")
+        v.addWidget(result_box)
+        btn_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(result_box.toPlainText()))
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        v.addLayout(btn_row)
+
+        worker = DeepDiveWorker(api_key, selected)
+        worker.result.connect(result_box.setPlainText)
+        worker.error.connect(lambda e: result_box.setPlainText(f"Error: {e}"))
+        self._deep_dive_workers.append(worker)
+        worker.finished.connect(
+            lambda: self._deep_dive_workers.remove(worker)
+            if worker in self._deep_dive_workers else None
+        )
+        worker.start()
+        dlg.exec()
 
     # ── STYLES ────────────────────────────────────────────────────────────────
     def _apply_styles(self):
@@ -1671,7 +1863,7 @@ class OverlayWindow(QWidget):
 
     # ── WHISPER LOADING ───────────────────────────────────────────────────────
     def _load_whisper(self):
-        self.loader = WhisperLoader(self.config.get("whisper_model", "medium"))
+        self.loader = WhisperLoader()
         self.loader.done.connect(self._on_whisper_loaded)
         self.loader.status.connect(lambda msg: (
             self.whisper_banner.setText(msg) or self._apply_styles()
@@ -1747,7 +1939,7 @@ class OverlayWindow(QWidget):
     def _on_whisper_loaded(self, model, err):
         self.whisper = model
         if model:
-            msg = f"✓  Whisper {self.loader.model_size} ready"
+            msg = f"✓  Whisper {WHISPER_MODEL} ready"
             if err:
                 msg += f"  ({err})"
             self.whisper_banner.setObjectName("banner_ok")
@@ -1959,6 +2151,8 @@ class OverlayWindow(QWidget):
 
     # ── AI SUGGESTIONS ────────────────────────────────────────────────────────
     def _fetch_suggestions(self):
+        if self.mode == "transcript":
+            return  # Transcript mode: record only, no AI suggestions
         api_key = self.config.get("api_key", "")
         if not api_key:
             self._set_response_text("🔑 Add your Anthropic API key in Settings (⚙) to enable suggestions.", error=True)
@@ -1967,7 +2161,6 @@ class OverlayWindow(QWidget):
         custom_prompts = self.config.get("custom_prompts", {})
         worker = ClaudeWorker(api_key, self.mode, self.full_transcript,
                               briefing=self._briefing, custom_prompts=custom_prompts)
-        worker.stream_text.connect(self._on_stream_chunk)
         worker.result.connect(self._render_suggestions)
         worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
         self.claude_q.append(worker)
@@ -1975,24 +2168,7 @@ class OverlayWindow(QWidget):
         self._set_response_text("Analyzing conversation...", thinking=True)
         worker.start()
 
-    def _on_stream_chunk(self, text: str):
-        """Update the response area with progressively streamed text (no copy button yet)."""
-        if self._stream_label is None:
-            # First chunk — clear the "Analyzing..." message and create the stream label
-            while self.response_layout.count():
-                item = self.response_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            self._stream_label = QLabel("")
-            self._stream_label.setWordWrap(True)
-            self._stream_label.setFont(QFont("Segoe UI", 10))
-            self._stream_label.setStyleSheet("color: #cbd5e1;")
-            self.response_layout.addWidget(self._stream_label)
-        self._stream_label.setText(text)
-
     def _render_suggestions(self, data: dict):
-        # Mark streaming as done — full render below will replace with copy button
-        self._stream_label = None
         # Store for potential auto-archive use
         self._last_suggestion_data = data
         # Save to history before rendering live view
@@ -2215,6 +2391,16 @@ class OverlayWindow(QWidget):
             }}
             QPushButton:hover {{ background: {c}55; }}
         """)
+        if not hasattr(self, "topics_frame"):
+            return  # UI not yet fully built
+        if self.mode == "transcript":
+            self._set_response_text("📝 Transcript mode — AI suggestions disabled. Recording transcript only.", thinking=True)
+            self.topics_frame.hide()
+            self.followups_frame.hide()
+            self.followups_label.hide()
+        else:
+            self.topics_frame.show()
+            self._set_response_text("Responses will appear as conversation unfolds...")
 
     # ── SETTINGS ──────────────────────────────────────────────────────────────
     def _export_session(self):
@@ -2262,65 +2448,9 @@ class OverlayWindow(QWidget):
             self.export_btn.setText("✗")
             QTimer.singleShot(2000, lambda: self.export_btn.setText("↓"))
 
-    # ── BRIEFING TEMPLATES ────────────────────────────────────────────────────
-    def _load_template_combo(self):
-        self._template_combo.blockSignals(True)
-        self._template_combo.clear()
-        self._template_combo.addItem("— Select template —", None)
-        for tpl in self.config.get("briefing_templates", []):
-            self._template_combo.addItem(tpl["name"], tpl["text"])
-        self._template_combo.setCurrentIndex(0)
-        self._template_combo.blockSignals(False)
-
-    def _on_template_selected(self, index):
-        text = self._template_combo.itemData(index)
-        if text is not None:
-            self._briefing_edit.setPlainText(text)
-            # Reset to placeholder after a tick so user can re-select same template
-            QTimer.singleShot(100, lambda: self._template_combo.blockSignals(True) or
-                              self._template_combo.setCurrentIndex(0) or
-                              self._template_combo.blockSignals(False))
-
-    def _save_template(self):
-        from PyQt6.QtWidgets import QInputDialog
-        text = self._briefing_edit.toPlainText().strip()
-        if not text:
-            return
-        name, ok = QInputDialog.getText(self, "Save Template", "Template name:")
-        if not ok or not name.strip():
-            return
-        templates = self.config.setdefault("briefing_templates", [])
-        # Overwrite if name already exists
-        for tpl in templates:
-            if tpl["name"] == name.strip():
-                tpl["text"] = text
-                save_config(self.config)
-                self._load_template_combo()
-                return
-        templates.append({"name": name.strip(), "text": text})
-        save_config(self.config)
-        self._load_template_combo()
-
-    def _delete_template(self):
-        from PyQt6.QtWidgets import QMessageBox
-        idx = self._template_combo.currentIndex()
-        if idx <= 0:
-            return
-        name = self._template_combo.currentText()
-        if QMessageBox.question(self, "Delete Template",
-                                f'Delete template "{name}"?',
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                                ) != QMessageBox.StandardButton.Yes:
-            return
-        templates = self.config.get("briefing_templates", [])
-        self.config["briefing_templates"] = [t for t in templates if t["name"] != name]
-        save_config(self.config)
-        self._load_template_combo()
-
     def _toggle_briefing(self):
         visible = self._briefing_edit.isVisible()
         self._briefing_edit.setVisible(not visible)
-        self._template_row.setVisible(not visible)
         self._briefing_toggle.setText("▾ Collapse" if not visible else "▸ Expand")
 
     def _register_hotkey(self):
@@ -2348,62 +2478,26 @@ class OverlayWindow(QWidget):
     def _open_settings(self):
         dlg = SettingsDialog(self.config, self)
         if dlg.exec():
-            old_model = self.config.get("whisper_model", "medium")
             self.config = dlg.get_config()
             save_config(self.config)
             self._theme = self.config.get("theme", "dark")
             self._apply_styles()
             self._set_opacity(int(self._opacity_val * 100))
-            stealth_on = self.config.get("stealth_mode", False)
-            if stealth_on and not self._apply_stealth_mode(True):
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(
-                    self, "Stealth Mode Unavailable",
-                    "Stealth mode requires Windows 10 Build 2004 (May 2020) or later.\n\n"
-                    "The setting has been saved but is not active on this system."
-                )
-            else:
-                self._apply_stealth_mode(stealth_on)
-            self._hide_from_alttab()
+            self._apply_stealth_mode(self.config.get("stealth_mode", False))
             self._register_hotkey()
-            # Reload Whisper if the model changed
-            if self.config.get("whisper_model", "medium") != old_model:
-                self.whisper = None
-                if self.capture:
-                    self._stop_recording()
-                self._load_whisper()
 
     # ── STEALTH MODE ──────────────────────────────────────────────────────────
-    def _apply_stealth_mode(self, enabled: bool) -> bool:
-        """Hide the window from screen capture using Windows display affinity.
-        Returns True on success, False if the API call failed (e.g. old Windows)."""
+    def _apply_stealth_mode(self, enabled: bool):
+        """Hide the window from screen capture using Windows display affinity."""
         if sys.platform != "win32":
-            return not enabled
+            return
         try:
             import ctypes
             WDA_NONE               = 0x00000000
             WDA_EXCLUDEFROMCAPTURE = 0x00000011
             hwnd = int(self.winId())
             affinity = WDA_EXCLUDEFROMCAPTURE if enabled else WDA_NONE
-            result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
-            return bool(result)
-        except Exception:
-            return False
-
-    def _hide_from_alttab(self):
-        """Remove window from Alt+Tab switcher by setting WS_EX_TOOLWINDOW
-        and clearing WS_EX_APPWINDOW via ctypes (belt-and-suspenders over Qt.Tool)."""
-        if sys.platform != "win32":
-            return
-        try:
-            import ctypes
-            GWL_EXSTYLE      = -20
-            WS_EX_TOOLWINDOW = 0x00000080
-            WS_EX_APPWINDOW  = 0x00040000
-            hwnd = int(self.winId())
-            style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
-            style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
-            ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
         except Exception:
             pass
 
@@ -2518,17 +2612,11 @@ if __name__ == "__main__":
     app.setApplicationName("PandAI Assistant")
     app.setQuitOnLastWindowClosed(True)
 
+    panda_icon = _make_panda_icon()
+    app.setWindowIcon(panda_icon)
+
     window = OverlayWindow()
+    window.setWindowIcon(panda_icon)
     window.show()
-    window._hide_from_alttab()
-    stealth_on = window.config.get("stealth_mode", False)
-    if stealth_on and not window._apply_stealth_mode(True):
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.warning(
-            window, "Stealth Mode Unavailable",
-            "Stealth mode requires Windows 10 Build 2004 (May 2020) or later.\n\n"
-            "The setting has been saved but is not active on this system."
-        )
-    else:
-        window._apply_stealth_mode(stealth_on)
+    window._apply_stealth_mode(window.config.get("stealth_mode", False))
     sys.exit(app.exec())
