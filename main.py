@@ -2497,7 +2497,7 @@ class OverlayWindow(QWidget):
         icon  = MODE_ICONS[self.mode]
         label = MODE_LABELS[self.mode]
         self.mode_btn.setText(f"{icon}  {label}  ▾")
-        c = MODE_COLORS[self.mode]
+        c = "#00d4ff"  # always use General's cyan — consistent, clean
         self.mode_btn.setStyleSheet(f"""
             QPushButton {{
                 font-size: 9pt; font-weight: 600;
