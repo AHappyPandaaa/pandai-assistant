@@ -30,6 +30,7 @@ from PyQt6.QtGui import (
     QColor, QPainter, QBrush, QPen, QFont, QFontDatabase,
     QLinearGradient, QPalette, QCursor, QIcon, QPixmap
 )
+from PyQt6.QtWidgets import QGraphicsDropShadowEffect
 
 # ── PANDA ICON ───────────────────────────────────────────────────────────────
 def _make_panda_icon() -> QIcon:
@@ -484,7 +485,7 @@ class LevelMeter(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._level = 0.0
-        self.setFixedSize(64, 14)
+        self.setFixedSize(70, 14)
 
     def set_level(self, level: float):
         self._level = max(0.0, min(1.0, level))
@@ -493,14 +494,25 @@ class LevelMeter(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        n, bar_w, gap, bar_h = 8, 5, 2, 10
+        painter.setPen(Qt.PenStyle.NoPen)
+        n, bar_w, gap, bar_h = 10, 4, 2, 10
         for i in range(n):
             threshold = (i + 1) / n
             if self._level >= threshold:
-                color = QColor("#10b981") if i < 5 else (QColor("#f59e0b") if i < 7 else QColor("#ef4444"))
+                if i < 6:
+                    color = QColor(48, 209, 88)      # Apple green
+                elif i < 8:
+                    color = QColor(255, 159, 10)     # Apple orange
+                else:
+                    color = QColor(255, 59, 48)      # Apple red
+                color.setAlpha(230)
             else:
-                color = QColor(50, 55, 65)
-            painter.fillRect(i * (bar_w + gap), 2, bar_w, bar_h, color)
+                color = QColor(84, 84, 88, 60)       # Apple fill tertiary
+            x = i * (bar_w + gap)
+            radius = bar_w / 2
+            from PyQt6.QtCore import QRectF
+            painter.setBrush(QBrush(color))
+            painter.drawRoundedRect(QRectF(x, 2, bar_w, bar_h), radius, radius)
 
 # ── TRANSCRIPTION THREAD ─────────────────────────────────────────────────────
 class TranscribeWorker(QThread):
@@ -1018,6 +1030,7 @@ class OverlayWindow(QWidget):
         self._build_ui()
         self._load_saved_history()
         self._apply_styles()
+        self._apply_shadow()
         self._set_opacity(int(self._opacity_val * 100))
         self._load_whisper()
 
@@ -1030,10 +1043,26 @@ class OverlayWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(400, 500)
-        self.resize(420, 680)
+        self.resize(430, 700)
         # Position: right side of primary screen
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.width() - 440, 60)
+        self.move(screen.width() - 450, 60)
+
+    def _apply_shadow(self):
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(40)
+        shadow.setXOffset(0)
+        shadow.setYOffset(8)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        self.card.setGraphicsEffect(shadow)
+
+    def _pulse_dot(self):
+        """Alternate status dot opacity to create a breathing pulse while recording."""
+        if self._dot_pulse_bright:
+            self.status_dot.setStyleSheet("color: rgba(0,212,255,255); font-size: 8pt;")
+        else:
+            self.status_dot.setStyleSheet("color: rgba(0,212,255,100); font-size: 8pt;")
+        self._dot_pulse_bright = not self._dot_pulse_bright
 
     # ── UI BUILD ──────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -1051,16 +1080,22 @@ class OverlayWindow(QWidget):
         # ── Header
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(42)
+        header.setFixedHeight(48)
         hl = QHBoxLayout(header)
-        hl.setContentsMargins(14, 0, 10, 0)
+        hl.setContentsMargins(16, 0, 12, 0)
         hl.setSpacing(8)
 
         self.status_dot = QLabel("●")
         self.status_dot.setObjectName("dot_inactive")
         self.status_dot.setFixedWidth(14)
 
-        title = QLabel("PANDAI ASSISTANT")
+        # Pulse timer for recording indicator
+        self._dot_pulse_timer = QTimer(self)
+        self._dot_pulse_timer.setInterval(600)
+        self._dot_pulse_timer.timeout.connect(self._pulse_dot)
+        self._dot_pulse_bright = True
+
+        title = QLabel("Pandai Assistant")
         title.setObjectName("header_title")
 
         self.mode_btn = QPushButton()
@@ -1690,67 +1725,73 @@ class OverlayWindow(QWidget):
     def _apply_styles(self):
         d = (self._theme != "light")
 
-        # ── colour palette ─────────────────────────────────────────────────
-        c_card      = "rgba(9,10,14,242)"        if d else "rgba(248,250,252,248)"
-        b_main      = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,8)"
-        c_header    = "rgba(255,255,255,4)"      if d else "rgba(0,0,0,3)"
+        # ── Apple HIG-inspired colour palette ─────────────────────────────
+        # Dark: Apple system backgrounds + PandAI cyan accent
+        c_card      = "rgba(22,22,26,250)"       if d else "rgba(245,245,247,252)"
+        b_main      = "rgba(255,255,255,9)"      if d else "rgba(0,0,0,7)"
+        c_header    = "rgba(30,30,35,200)"       if d else "rgba(0,0,0,4)"
         c_ctrl      = "rgba(255,255,255,3)"      if d else "rgba(0,0,0,2)"
-        t_title     = "#475569"                  if d else "#94a3b8"
-        t_primary   = "#e2e8f0"                  if d else "#0f172a"
-        t_second    = "#94a3b8"                  if d else "#475569"
+        t_title     = "rgba(235,235,245,0.5)"    if d else "rgba(60,60,67,0.6)"
+        t_primary   = "rgba(255,255,255,0.95)"   if d else "rgba(0,0,0,0.88)"
+        t_second    = "rgba(235,235,245,0.55)"   if d else "rgba(60,60,67,0.5)"
         accent      = "#00d4ff"                  if d else "#0284c7"
-        accent_bg   = "rgba(0,212,255,7)"        if d else "rgba(2,132,199,5)"
-        accent_br   = "rgba(0,212,255,30)"       if d else "rgba(2,132,199,25)"
-        accent_l3   = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
-        accent_mb   = "rgba(0,212,255,15)"       if d else "rgba(2,132,199,10)"
-        accent_m3   = "rgba(0,212,255,60)"       if d else "rgba(2,132,199,50)"
-        accent_sel  = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
-        c_input     = "rgba(255,255,255,6)"      if d else "rgba(0,0,0,4)"
-        b_input     = "rgba(255,255,255,12)"     if d else "rgba(0,0,0,10)"
-        c_dropdown  = "#13141a"                  if d else "#f8fafc"
-        t_input     = "#e2e8f0"                  if d else "#334155"
-        c_trans     = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,3)"
-        t_trans     = "#cbd5e1"                  if d else "#334155"
-        c_scroll    = "rgba(255,255,255,30)"     if d else "rgba(0,0,0,20)"
-        t_place     = "#334155"                  if d else "#94a3b8"
-        t_section   = "#334155"                  if d else "#94a3b8"
+        accent_bg   = "rgba(0,212,255,6)"        if d else "rgba(2,132,199,4)"
+        accent_br   = "rgba(0,212,255,28)"       if d else "rgba(2,132,199,22)"
+        accent_l3   = "rgba(0,212,255,45)"       if d else "rgba(2,132,199,35)"
+        accent_mb   = "rgba(0,212,255,12)"       if d else "rgba(2,132,199,8)"
+        accent_m3   = "rgba(0,212,255,55)"       if d else "rgba(2,132,199,45)"
+        accent_sel  = "rgba(0,212,255,45)"       if d else "rgba(2,132,199,35)"
+        c_input     = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,3)"
+        b_input     = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,8)"
+        c_dropdown  = "#1c1c1e"                  if d else "#f5f5f7"
+        t_input     = "rgba(255,255,255,0.9)"    if d else "rgba(0,0,0,0.8)"
+        c_trans     = "rgba(255,255,255,4)"      if d else "rgba(0,0,0,3)"
+        t_trans     = "rgba(235,235,245,0.75)"   if d else "rgba(0,0,0,0.7)"
+        # Apple separator: rgba(84,84,88,0.65)
+        c_scroll    = "rgba(120,120,128,0.4)"    if d else "rgba(60,60,67,0.25)"
+        t_place     = "rgba(120,120,128,0.6)"    if d else "rgba(60,60,67,0.4)"
+        t_section   = "rgba(120,120,128,0.7)"    if d else "rgba(60,60,67,0.5)"
         dot_active  = "#00d4ff"                  if d else "#0284c7"
-        dot_inact   = "#334155"                  if d else "#cbd5e1"
-        c_resp_txt  = "#e2e8f0"                  if d else "#0f172a"
-        t_topics    = "#94a3b8"                  if d else "#475569"
-        groove_bg   = "rgba(255,255,255,15)"     if d else "rgba(0,0,0,12)"
+        dot_inact   = "rgba(84,84,88,0.8)"       if d else "rgba(60,60,67,0.3)"
+        c_resp_txt  = "rgba(255,255,255,0.92)"   if d else "rgba(0,0,0,0.85)"
+        t_topics    = "rgba(235,235,245,0.6)"    if d else "rgba(60,60,67,0.55)"
+        groove_bg   = "rgba(120,120,128,0.3)"    if d else "rgba(60,60,67,0.18)"
         icon_hov_bg = "rgba(255,255,255,8)"      if d else "rgba(0,0,0,6)"
-        b_sel       = "rgba(99,102,241,35)"      if d else "rgba(99,102,241,40)"
-        c_brief_bg  = "rgba(255,255,255,4)"      if d else "rgba(255,255,255,0.7)"
-        t_brief     = "#cbd5e1"                  if d else "#334155"
+        b_sel       = "rgba(99,102,241,32)"      if d else "rgba(99,102,241,38)"
+        c_brief_bg  = "rgba(255,255,255,4)"      if d else "rgba(255,255,255,0.65)"
+        t_brief     = "rgba(235,235,245,0.8)"    if d else "rgba(0,0,0,0.65)"
+        sep         = "rgba(84,84,88,0.5)"       if d else "rgba(60,60,67,0.18)"
         # ───────────────────────────────────────────────────────────────────
 
         self.setStyleSheet(f"""
-            QWidget {{ font-family: 'Segoe UI', sans-serif; }}
+            QWidget {{
+                font-family: 'SF Pro Display', 'SF Pro Text', 'Segoe UI', '-apple-system', sans-serif;
+            }}
 
             #card {{
                 background: {c_card};
                 border: 1px solid {b_main};
-                border-radius: 20px;
+                border-radius: 22px;
             }}
 
             #header {{
                 background: {c_header};
-                border-top-left-radius: 20px;
-                border-top-right-radius: 20px;
+                border-top-left-radius: 22px;
+                border-top-right-radius: 22px;
+                border-bottom: 1px solid {sep};
             }}
 
             #header_title {{
-                font-size: 8pt; font-weight: 600;
-                letter-spacing: 1.5px; color: {t_title};
+                font-size: 9pt; font-weight: 600;
+                letter-spacing: 0.3px; color: {t_primary};
             }}
 
-            #dot_inactive {{ color: {dot_inact}; font-size: 7pt; }}
-            #dot_active   {{ color: {dot_active}; font-size: 7pt; }}
+            #dot_inactive {{ color: {dot_inact}; font-size: 8pt; }}
+            #dot_active   {{ color: {dot_active}; font-size: 8pt; }}
 
             #mode_btn {{
                 font-size: 8pt; font-weight: 600;
-                border-radius: 10px; padding: 2px 10px;
+                border-radius: 11px; padding: 3px 11px;
                 border: 1px solid {accent_m3};
                 background: {accent_mb}; color: {accent};
             }}
@@ -1758,29 +1799,38 @@ class OverlayWindow(QWidget):
 
             #icon_btn {{
                 background: transparent; border: none;
-                color: {t_second}; font-size: 10pt; border-radius: 6px;
+                color: {t_second}; font-size: 11pt; border-radius: 7px;
             }}
             #icon_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
 
-            #ctrl_bar {{ background: {c_ctrl}; }}
+            #ctrl_bar {{
+                background: {c_ctrl};
+                border-bottom: 1px solid {sep};
+            }}
 
             #rec_btn {{
-                background: {c_input};
-                border: 1px solid {b_input};
-                border-radius: 10px; color: {t_primary};
-                font-size: 9pt; font-weight: 600; padding: 0 14px;
+                background: rgba(0,212,255,14);
+                border: 1px solid rgba(0,212,255,45);
+                border-radius: 14px; color: {accent};
+                font-size: 9pt; font-weight: 600; padding: 0 16px;
             }}
-            #rec_btn:hover {{ background: rgba(255,255,255,10); }}
+            #rec_btn:hover {{
+                background: rgba(0,212,255,22);
+                border-color: rgba(0,212,255,70);
+            }}
             #rec_btn[recording=true] {{
-                background: rgba(239,68,68,18);
-                border-color: rgba(239,68,68,80);
-                color: #fca5a5;
+                background: rgba(255,59,48,14);
+                border-color: rgba(255,59,48,60);
+                color: #ff6b6b;
+            }}
+            #rec_btn[recording=true]:hover {{
+                background: rgba(255,59,48,22);
             }}
 
             #pause_btn {{
                 background: {c_input};
                 border: 1px solid {b_input};
-                border-radius: 10px; color: {t_second};
+                border-radius: 14px; color: {t_second};
                 font-size: 9pt; font-weight: 600; padding: 0 12px;
             }}
             #pause_btn:hover {{ background: rgba(255,255,255,10); color: {t_primary}; }}
@@ -1797,14 +1847,14 @@ class OverlayWindow(QWidget):
             }}
 
             #briefing_panel {{
-                background: rgba(99,102,241,6);
-                border-bottom: 1px solid rgba(99,102,241,20);
+                background: rgba(99,102,241,5);
+                border-bottom: 1px solid rgba(99,102,241,18);
             }}
             #briefing_edit {{
                 background: {c_brief_bg};
                 border: 1px solid {b_sel};
-                border-radius: 8px; color: {t_brief};
-                font-size: 9pt; padding: 6px 8px;
+                border-radius: 10px; color: {t_brief};
+                font-size: 9pt; padding: 7px 10px;
             }}
             #briefing_toggle_btn {{
                 background: transparent; border: none;
@@ -1813,54 +1863,60 @@ class OverlayWindow(QWidget):
             #briefing_toggle_btn:hover {{ color: #a5b4fc; }}
 
             #banner_loading {{
-                background: rgba(245,158,11,12);
-                border-bottom: 1px solid rgba(245,158,11,35);
-                color: #fbbf24; font-size: 9pt; padding: 5px 12px;
+                background: rgba(255,159,10,10);
+                border-bottom: 1px solid rgba(255,159,10,30);
+                color: #ff9f0a; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_ok {{
-                background: rgba(16,185,129,10);
-                border-bottom: 1px solid rgba(16,185,129,35);
-                color: #34d399; font-size: 9pt; padding: 5px 12px;
+                background: rgba(48,209,88,8);
+                border-bottom: 1px solid rgba(48,209,88,28);
+                color: #30d158; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_error {{
-                background: rgba(239,68,68,10);
-                border-bottom: 1px solid rgba(239,68,68,35);
-                color: #f87171; font-size: 9pt; padding: 5px 12px;
+                background: rgba(255,59,48,8);
+                border-bottom: 1px solid rgba(255,59,48,28);
+                color: #ff453a; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
             #banner_update_frame {{
-                background: rgba(124,58,237,12);
-                border-bottom: 1px solid rgba(124,58,237,40);
+                background: rgba(94,92,230,10);
+                border-bottom: 1px solid rgba(94,92,230,35);
             }}
-            #banner_update_label {{ color: #a78bfa; font-size: 9pt; }}
+            #banner_update_label {{ color: #a5b4fc; font-size: 9pt; }}
             #update_now_btn {{
-                background: rgba(124,58,237,140);
+                background: rgba(94,92,230,130);
                 color: white; font-size: 8pt; font-weight: 600;
-                border: 1px solid rgba(124,58,237,180);
-                border-radius: 8px; padding: 3px 10px;
+                border: 1px solid rgba(94,92,230,180);
+                border-radius: 10px; padding: 3px 12px;
             }}
-            #update_now_btn:hover {{ background: rgba(124,58,237,200); }}
-            #update_now_btn:disabled {{ background: rgba(124,58,237,50); color: rgba(255,255,255,80); }}
+            #update_now_btn:hover {{ background: rgba(94,92,230,190); }}
+            #update_now_btn:disabled {{ background: rgba(94,92,230,45); color: rgba(255,255,255,70); }}
 
             #section_frame {{ background: transparent; }}
 
             #section_label {{
-                font-size: 7pt; font-weight: 600;
-                letter-spacing: 1.5px; color: {t_section};
-                padding: 6px 0 3px 0;
+                font-size: 7pt; font-weight: 700;
+                letter-spacing: 0.8px; color: {t_section};
+                padding: 5px 0 2px 0;
+                text-transform: uppercase;
             }}
 
             #transcript_box {{
                 background: {c_trans};
                 border: 1px solid {b_input};
-                border-radius: 10px; color: {t_trans};
-                font-size: 10pt; padding: 6px 8px;
+                border-radius: 12px; color: {t_trans};
+                font-size: 9.5pt; padding: 7px 10px;
                 selection-background-color: {accent_sel};
             }}
 
-            QScrollBar:vertical {{ background: transparent; width: 3px; margin: 4px 0; }}
+            QScrollBar:vertical {{
+                background: transparent; width: 4px; margin: 6px 0;
+            }}
             QScrollBar::handle:vertical {{
-                background: {c_scroll}; border-radius: 2px; min-height: 20px;
+                background: {c_scroll}; border-radius: 2px; min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(120,120,128,0.6);
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
@@ -1869,18 +1925,21 @@ class OverlayWindow(QWidget):
 
             #response_frame {{
                 background: {accent_bg};
-                border: none;
-                border-left: 2px solid {accent_br};
-                border-radius: 0 10px 10px 0;
+                border: 1px solid {accent_br};
+                border-left: 2px solid {accent};
+                border-radius: 12px;
             }}
 
             #topics_frame {{ background: transparent; }}
             #followups_frame {{ background: transparent; }}
 
-            #placeholder_text {{ color: {t_place}; font-size: 10pt; font-style: italic; }}
+            #placeholder_text {{
+                color: {t_place}; font-size: 10pt; font-style: italic;
+                line-height: 1.5;
+            }}
 
             QLabel#response_text {{
-                color: {c_resp_txt}; font-size: 10pt; line-height: 1.6;
+                color: {c_resp_txt}; font-size: 10pt; line-height: 1.65;
             }}
 
             QLabel {{ color: {t_topics}; }}
@@ -1889,12 +1948,15 @@ class OverlayWindow(QWidget):
                 height: 2px; background: {groove_bg}; border-radius: 1px;
             }}
             QSlider::handle:horizontal {{
-                width: 10px; height: 10px; margin: -4px 0;
-                background: {accent}; border-radius: 5px;
+                width: 12px; height: 12px; margin: -5px 0;
+                background: {accent}; border-radius: 6px;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: white;
             }}
 
             QTabWidget#main_tabs::pane {{
-                border: none; border-top: 1px solid {b_main};
+                border: none; border-top: 1px solid {sep};
                 background: transparent;
             }}
             QTabWidget#main_tabs > QTabBar {{
@@ -1904,7 +1966,7 @@ class OverlayWindow(QWidget):
                 background: transparent;
                 border: none;
                 border-bottom: 2px solid transparent;
-                padding: 7px 18px;
+                padding: 8px 20px;
                 margin-right: 2px;
                 color: {t_section};
                 font-size: 9pt; font-weight: 600;
@@ -2042,6 +2104,8 @@ class OverlayWindow(QWidget):
         self.rec_btn.setStyle(self.rec_btn.style())
         self.status_dot.setObjectName("dot_active")
         self.status_dot.setStyle(self.status_dot.style())
+        self._dot_pulse_bright = True
+        self._dot_pulse_timer.start()
         self.transcript_box.setPlaceholderText("Listening — updating every 2s...")
         self.pause_btn.setText("⏸  Pause")
         self.pause_btn.show()
@@ -2055,6 +2119,8 @@ class OverlayWindow(QWidget):
         self.rec_btn.setText("▶  Start Listening")
         self.rec_btn.setProperty("recording", False)
         self.rec_btn.setStyle(self.rec_btn.style())
+        self._dot_pulse_timer.stop()
+        self.status_dot.setStyleSheet("")
         self.status_dot.setObjectName("dot_inactive")
         self.status_dot.setStyle(self.status_dot.style())
         self.pause_btn.hide()
@@ -2074,6 +2140,8 @@ class OverlayWindow(QWidget):
         self._paused = True
         self.pause_btn.setText("▶  Resume")
         self.level_meter.set_level(0.0)
+        self._dot_pulse_timer.stop()
+        self.status_dot.setStyleSheet("")
         self.status_dot.setObjectName("dot_inactive")
         self.status_dot.setStyle(self.status_dot.style())
         self.transcript_box.setPlaceholderText("Paused — session context preserved. Click Resume to continue.")
@@ -2091,6 +2159,8 @@ class OverlayWindow(QWidget):
         self.pause_btn.setText("⏸  Pause")
         self.status_dot.setObjectName("dot_active")
         self.status_dot.setStyle(self.status_dot.style())
+        self._dot_pulse_bright = True
+        self._dot_pulse_timer.start()
         self.transcript_box.setPlaceholderText("Listening — updating every 2s...")
 
     def _on_audio_chunk(self, audio: np.ndarray, source: str = "mic"):
@@ -2262,14 +2332,19 @@ class OverlayWindow(QWidget):
             for q in followups:
                 chip = QPushButton(q)
                 chip.setObjectName("followup_chip")
-                chip.setFont(QFont("Segoe UI", 9))
+                chip.setFont(QFont("SF Pro Text", 9))
                 chip.setStyleSheet("""
                     QPushButton {
-                        background: rgba(99,102,241,10); border: none;
-                        border-radius: 14px; color: #818cf8;
+                        background: rgba(94,92,230,10);
+                        border: 1px solid rgba(94,92,230,30);
+                        border-radius: 14px; color: #a5b4fc;
                         padding: 6px 14px; text-align: left;
                     }
-                    QPushButton:hover { background: rgba(99,102,241,22); color: #a5b4fc; }
+                    QPushButton:hover {
+                        background: rgba(94,92,230,20);
+                        border-color: rgba(94,92,230,55);
+                        color: #c4b5fd;
+                    }
                 """)
                 chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
                 chip.clicked.connect(lambda _, text=q: QApplication.clipboard().setText(text))
@@ -2287,75 +2362,103 @@ class OverlayWindow(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        is_dark = (self._theme != "light")
         lbl = QLabel(text)
         lbl.setWordWrap(True)
-        lbl.setFont(QFont("Segoe UI", 10))
+        lbl.setFont(QFont("SF Pro Text", 10))
         if error:
-            lbl.setStyleSheet("color: #fca5a5; font-style: italic;")
+            lbl.setStyleSheet("color: #ff453a; font-style: italic;")
         elif thinking:
-            lbl.setStyleSheet("color: #64748b; font-style: italic;")
+            lbl.setStyleSheet("color: rgba(120,120,128,0.7); font-style: italic;")
         else:
-            lbl.setStyleSheet("color: #cbd5e1;")
+            resp_color = "rgba(255,255,255,0.9)" if is_dark else "rgba(0,0,0,0.85)"
+            lbl.setStyleSheet(f"color: {resp_color}; line-height: 1.6;")
             self.response_layout.addWidget(lbl)
-            copy_btn = QPushButton("Copy")
-            copy_btn.setFont(QFont("Segoe UI", 9))
+
+            # Copy row with aligned right button
+            copy_row = QHBoxLayout()
+            copy_row.setContentsMargins(0, 4, 0, 0)
+            copy_row.addStretch()
+            copy_btn = QPushButton("⎘  Copy")
+            copy_btn.setFont(QFont("SF Pro Text", 8))
+            copy_btn.setFixedHeight(22)
+            copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             copy_btn.setStyleSheet("""
                 QPushButton {
-                    background: transparent; border: none;
-                    border-radius: 8px; color: #475569; padding: 3px 10px;
-                    max-width: 60px; font-size: 8pt;
+                    background: rgba(120,120,128,0.15); border: none;
+                    border-radius: 11px; color: rgba(120,120,128,0.9);
+                    padding: 2px 10px; font-size: 8pt;
                 }
-                QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
+                QPushButton:hover {
+                    background: rgba(120,120,128,0.25);
+                    color: rgba(235,235,245,0.9);
+                }
             """)
             def _do_copy(btn=copy_btn, t=text):
                 QApplication.clipboard().setText(t)
-                btn.setText("✓ Copied")
+                btn.setText("✓  Copied")
                 btn.setStyleSheet("""
-                    QPushButton { background: transparent; border: none;
-                    border-radius: 8px; color: #34d399; padding: 3px 10px;
-                    max-width: 70px; font-size: 8pt; }
-                """)
-                QTimer.singleShot(1500, lambda: (btn.setText("Copy"), btn.setStyleSheet("""
                     QPushButton {
-                        background: transparent; border: none;
-                        border-radius: 8px; color: #475569; padding: 3px 10px;
-                        max-width: 60px; font-size: 8pt;
+                        background: rgba(48,209,88,0.15); border: none;
+                        border-radius: 11px; color: #30d158;
+                        padding: 2px 10px; font-size: 8pt;
                     }
-                    QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
+                """)
+                QTimer.singleShot(1600, lambda: (btn.setText("⎘  Copy"), btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(120,120,128,0.15); border: none;
+                        border-radius: 11px; color: rgba(120,120,128,0.9);
+                        padding: 2px 10px; font-size: 8pt;
+                    }
+                    QPushButton:hover {
+                        background: rgba(120,120,128,0.25);
+                        color: rgba(235,235,245,0.9);
+                    }
                 """)))
             copy_btn.clicked.connect(_do_copy)
-            self.response_layout.addWidget(copy_btn)
+            copy_row.addWidget(copy_btn)
+            copy_widget = QWidget()
+            copy_widget.setLayout(copy_row)
+            copy_widget.setStyleSheet("background: transparent;")
+            self.response_layout.addWidget(copy_widget)
             return
         self.response_layout.addWidget(lbl)
 
     def _make_topic_card(self, topic: dict):
         card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background: rgba(255,255,255,5);
-                border: none;
-                border-radius: 10px;
-            }
-            QFrame:hover { background: rgba(255,255,255,9); }
+        is_dark = (self._theme != "light")
+        bg      = "rgba(255,255,255,5)"  if is_dark else "rgba(0,0,0,3)"
+        bg_hov  = "rgba(255,255,255,9)"  if is_dark else "rgba(0,0,0,6)"
+        border  = "rgba(255,255,255,10)" if is_dark else "rgba(0,0,0,8)"
+        t_head  = "rgba(255,255,255,0.9)" if is_dark else "rgba(0,0,0,0.85)"
+        t_det   = "rgba(120,120,128,0.9)" if is_dark else "rgba(60,60,67,0.6)"
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 12px;
+            }}
+            QFrame:hover {{ background: {bg_hov}; }}
         """)
         card.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Minimum   # shrink/grow vertically to fit content
+            QSizePolicy.Policy.Minimum
         )
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(12, 9, 12, 9)
         layout.setSpacing(4)
 
         header_row = QHBoxLayout()
+        header_row.setSpacing(8)
         icon = QLabel(topic.get("icon", "🔗"))
         icon.setFont(QFont("Segoe UI", 11))
-        icon.setFixedWidth(22)
+        icon.setFixedWidth(20)
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         title = QLabel(topic.get("title", ""))
-        title.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #e2e8f0;")
-        title.setWordWrap(True)   # titles can wrap too
+        title.setFont(QFont("SF Pro Display", 10, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {t_head};")
+        title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         header_row.addWidget(icon)
@@ -2365,8 +2468,8 @@ class OverlayWindow(QWidget):
         detail = topic.get("detail", "")
         if detail:
             detail_lbl = QLabel(detail)
-            detail_lbl.setFont(QFont("Segoe UI", 9))
-            detail_lbl.setStyleSheet("color: #64748b; padding-left: 22px;")
+            detail_lbl.setFont(QFont("SF Pro Text", 9))
+            detail_lbl.setStyleSheet(f"color: {t_det}; padding-left: 28px;")
             detail_lbl.setWordWrap(True)
             detail_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             layout.addWidget(detail_lbl)
