@@ -2128,10 +2128,6 @@ class OverlayWindow(QWidget):
         # Keep highlight timer ticking while speech is coming in
         self._schedule_highlight_pass()
 
-        else:
-            self.followups_label.hide()
-            self.followups_frame.hide()
-
     def _set_response_text(self, text, error=False, thinking=False):
         while self.response_layout.count():
             item = self.response_layout.takeAt(0)
