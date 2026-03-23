@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextEdit,
     QScrollArea, QFrame, QSizeGrip, QSlider, QStackedWidget,
-    QSizePolicy, QTabWidget, QCheckBox, QMenu
+    QSizePolicy, QTabWidget, QCheckBox
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve,
@@ -28,67 +28,8 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor, QPainter, QBrush, QPen, QFont, QFontDatabase,
-    QLinearGradient, QPalette, QCursor, QIcon, QPixmap
+    QLinearGradient, QPalette, QCursor, QIcon
 )
-
-# ── PANDA ICON ───────────────────────────────────────────────────────────────
-def _make_panda_icon() -> QIcon:
-    """Draw a panda face programmatically and return it as a QIcon."""
-    size = 64
-    px = QPixmap(size, size)
-    px.fill(Qt.GlobalColor.transparent)
-
-    p = QPainter(px)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    black = QColor(30, 30, 30)
-    white = QColor(245, 245, 245)
-    pink  = QColor(220, 160, 160)
-
-    # --- ears (black circles, behind head) ---
-    p.setBrush(QBrush(black))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(2,  2, 18, 18)   # left ear
-    p.drawEllipse(44, 2, 18, 18)   # right ear
-
-    # --- inner ear (pink) ---
-    p.setBrush(QBrush(pink))
-    p.drawEllipse(6,  5, 10, 10)
-    p.drawEllipse(48, 5, 10, 10)
-
-    # --- head (white circle) ---
-    p.setBrush(QBrush(white))
-    p.drawEllipse(6, 10, 52, 52)
-
-    # --- eye patches (black ovals) ---
-    p.setBrush(QBrush(black))
-    p.drawEllipse(10, 20, 18, 14)  # left patch
-    p.drawEllipse(36, 20, 18, 14)  # right patch
-
-    # --- eyes (white dots) ---
-    p.setBrush(QBrush(white))
-    p.drawEllipse(15, 23, 7, 7)
-    p.drawEllipse(41, 23, 7, 7)
-
-    # --- pupils (black dots) ---
-    p.setBrush(QBrush(black))
-    p.drawEllipse(17, 25, 4, 4)
-    p.drawEllipse(43, 25, 4, 4)
-
-    # --- nose ---
-    p.setBrush(QBrush(black))
-    p.drawEllipse(27, 38, 10, 7)
-
-    # --- mouth ---
-    p.setPen(QPen(black, 2))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    from PyQt6.QtCore import QRect
-    p.drawArc(QRect(22, 42, 10, 8), 180 * 16, -180 * 16)  # left curve
-    p.drawArc(QRect(32, 42, 10, 8), 0 * 16,   -180 * 16)  # right curve
-
-    p.end()
-    return QIcon(px)
-
 
 # ── HOTKEY SIGNALER ───────────────────────────────────────────────────────────
 class _HotkeySignaler(QObject):
@@ -117,38 +58,20 @@ WHISPER_COMPUTE = "float16"
 CONFIG_FILE  = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".pandai_history.json")
 
-MODES = ["general", "interview", "technical", "sales", "casual", "transcript"]
+MODES = ["general", "interview", "technical", "sales", "casual"]
 MODE_LABELS = {
-    "general":    "General",
-    "interview":  "Interview",
-    "technical":  "Technical",
-    "sales":      "Client Call",
-    "casual":     "Casual",
-    "transcript": "Transcript",
-}
-MODE_ICONS = {
-    "general":    "💬",
-    "interview":  "🎯",
-    "technical":  "⚙️",
-    "sales":      "💼",
-    "casual":     "☕",
-    "transcript": "📝",
-}
-MODE_DESCRIPTIONS = {
-    "general":    "All-purpose conversation",
-    "interview":  "STAR-format answers",
-    "technical":  "Precise technical responses",
-    "sales":      "Value-focused client calls",
-    "casual":     "Natural everyday replies",
-    "transcript": "Record only, no AI suggestions",
+    "general":   "General",
+    "interview": "Interview",
+    "technical": "Technical",
+    "sales":     "Client Call",
+    "casual":    "Casual",
 }
 MODE_COLORS = {
-    "general":    "#00d4ff",
-    "interview":  "#10b981",
-    "technical":  "#f59e0b",
-    "sales":      "#a78bfa",
-    "casual":     "#f97316",
-    "transcript": "#6366f1",
+    "general":   "#00d4ff",
+    "interview": "#10b981",
+    "technical": "#f59e0b",
+    "sales":     "#a78bfa",
+    "casual":    "#f97316",
 }
 SYSTEM_PROMPTS = {
     "general": (
@@ -480,11 +403,12 @@ class AudioCapture(QThread):
 
 # ── LEVEL METER WIDGET ───────────────────────────────────────────────────────
 class LevelMeter(QWidget):
-    """Mini VU-style bar meter showing mic input level (8 segments, green→red)."""
+    """Full-width audio level bar with Apple-style gradient fill."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self._level = 0.0
-        self.setFixedSize(64, 14)
+        self.setFixedHeight(3)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_level(self, level: float):
         self._level = max(0.0, min(1.0, level))
@@ -493,14 +417,17 @@ class LevelMeter(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        n, bar_w, gap, bar_h = 8, 5, 2, 10
-        for i in range(n):
-            threshold = (i + 1) / n
-            if self._level >= threshold:
-                color = QColor("#10b981") if i < 5 else (QColor("#f59e0b") if i < 7 else QColor("#ef4444"))
-            else:
-                color = QColor(50, 55, 65)
-            painter.fillRect(i * (bar_w + gap), 2, bar_w, bar_h, color)
+        w, h = self.width(), self.height()
+        # Track
+        painter.fillRect(0, 0, w, h, QColor(84, 84, 88, 60))
+        # Active gradient fill
+        if self._level > 0:
+            fill_w = max(4, int(w * self._level))
+            grad = QLinearGradient(0, 0, fill_w, 0)
+            grad.setColorAt(0.0, QColor("#34C759"))
+            grad.setColorAt(0.65, QColor("#00C7FF"))
+            grad.setColorAt(1.0, QColor("#FF453A") if self._level > 0.85 else QColor("#00C7FF"))
+            painter.fillRect(0, 0, fill_w, h, QBrush(grad))
 
 # ── TRANSCRIPTION THREAD ─────────────────────────────────────────────────────
 class TranscribeWorker(QThread):
@@ -584,45 +511,6 @@ class ClaudeWorker(QThread):
 # ── SETTINGS DIALOG ───────────────────────────────────────────────────────────
 from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QGridLayout, QGroupBox, QScrollArea as _QScrollArea
 
-class DeepDiveWorker(QThread):
-    """Sends selected history points to Claude for a deeper analysis."""
-    result = pyqtSignal(str)
-    error  = pyqtSignal(str)
-
-    def __init__(self, api_key: str, entries: list):
-        super().__init__()
-        self.api_key = api_key
-        self.entries = entries
-
-    def run(self):
-        try:
-            client = anthropic.Anthropic(api_key=self.api_key)
-            parts = []
-            for e in self.entries:
-                topic_names = ", ".join(t.get("title", "") for t in e.get("topics", []))
-                parts.append(
-                    f"Snippet: {e.get('snippet', '')}\n"
-                    f"Topics: {topic_names}\n"
-                    f"Context: {e.get('response', '')}"
-                )
-            context = "\n\n---\n\n".join(parts)
-            system = (
-                "You are an expert analyst reviewing selected conversation points from a meeting or interview. "
-                "Provide a thorough deep dive: expand on the key topics, identify patterns or themes, "
-                "suggest follow-up actions or questions, and surface any insights worth revisiting. "
-                "Use clear markdown-style headers for each section."
-            )
-            msg = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1500,
-                system=system,
-                messages=[{"role": "user", "content": f"Analyze these conversation points:\n\n{context}"}],
-            )
-            self.result.emit(msg.content[0].text.strip())
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -634,47 +522,70 @@ class SettingsDialog(QDialog):
 
     def _apply_theme_styles(self):
         dark = (self.config.get("theme", "dark") != "light")
-        dlg_bg      = "#0d0e12"              if dark else "#f8fafc"
-        dlg_fg      = "#e2e8f0"              if dark else "#1e293b"
-        lbl_col     = "#94a3b8"              if dark else "#475569"
-        inp_bg      = "#1e2029"              if dark else "#ffffff"
-        inp_br      = "rgba(255,255,255,0.1)" if dark else "rgba(0,0,0,0.12)"
-        inp_fg      = "#e2e8f0"              if dark else "#1e293b"
-        focus_br    = "rgba(0,212,255,0.4)"  if dark else "rgba(2,132,199,0.5)"
-        grp_br      = "rgba(255,255,255,0.07)" if dark else "rgba(0,0,0,0.08)"
-        grp_col     = "#64748b"
-        chk_fg      = "#e2e8f0"              if dark else "#1e293b"
-        chk_ind_bg  = "#1e2029"              if dark else "#ffffff"
-        chk_ind_br  = "rgba(255,255,255,0.2)" if dark else "rgba(0,0,0,0.2)"
-        cancel_bg   = "rgba(255,255,255,0.06)" if dark else "rgba(0,0,0,0.05)"
-        cancel_br   = "rgba(255,255,255,0.1)"  if dark else "rgba(0,0,0,0.1)"
-        cancel_fg   = "#94a3b8"              if dark else "#64748b"
+        if dark:
+            dlg_bg     = "#1C1C1E"
+            dlg_fg     = "#F2F2F7"
+            lbl_col    = "rgba(235,235,245,0.5)"
+            inp_bg     = "#2C2C2E"
+            inp_br     = "rgba(255,255,255,0.1)"
+            inp_fg     = "#F2F2F7"
+            focus_br   = "rgba(0,199,255,0.5)"
+            grp_br     = "rgba(255,255,255,0.08)"
+            grp_col    = "rgba(235,235,245,0.4)"
+            chk_fg     = "#F2F2F7"
+            chk_ind_bg = "#3A3A3C"
+            chk_ind_br = "rgba(255,255,255,0.18)"
+            cancel_bg  = "rgba(255,255,255,0.08)"
+            cancel_br  = "rgba(255,255,255,0.12)"
+            cancel_fg  = "rgba(235,235,245,0.45)"
+            scroll_h   = "rgba(255,255,255,0.18)"
+            accent     = "#00C7FF"
+        else:
+            dlg_bg     = "#F2F2F7"
+            dlg_fg     = "#1C1C1E"
+            lbl_col    = "rgba(60,60,67,0.6)"
+            inp_bg     = "#FFFFFF"
+            inp_br     = "rgba(60,60,67,0.13)"
+            inp_fg     = "#1C1C1E"
+            focus_br   = "rgba(0,122,255,0.5)"
+            grp_br     = "rgba(60,60,67,0.1)"
+            grp_col    = "rgba(60,60,67,0.45)"
+            chk_fg     = "#1C1C1E"
+            chk_ind_bg = "#FFFFFF"
+            chk_ind_br = "rgba(60,60,67,0.2)"
+            cancel_bg  = "rgba(0,0,0,0.05)"
+            cancel_br  = "rgba(60,60,67,0.13)"
+            cancel_fg  = "rgba(60,60,67,0.5)"
+            scroll_h   = "rgba(60,60,67,0.22)"
+            accent     = "#007AFF"
+
         self.setStyleSheet(f"""
-            QDialog {{ background: {dlg_bg}; color: {dlg_fg}; font-family: Segoe UI; }}
+            QDialog {{ background: {dlg_bg}; color: {dlg_fg}; font-family: 'Segoe UI', sans-serif; }}
             QLabel {{ color: {lbl_col}; font-size: 10pt; }}
             QLineEdit {{
                 background: {inp_bg}; border: 1px solid {inp_br};
-                border-radius: 6px; padding: 7px 10px;
+                border-radius: 8px; padding: 8px 10px;
                 color: {inp_fg}; font-size: 10pt;
             }}
             QLineEdit:focus {{ border-color: {focus_br}; }}
             QComboBox {{
                 background: {inp_bg}; border: 1px solid {inp_br};
-                border-radius: 6px; padding: 7px 10px;
+                border-radius: 8px; padding: 8px 10px;
                 color: {inp_fg}; font-size: 10pt;
             }}
             QComboBox QAbstractItemView {{
                 background: {inp_bg}; color: {inp_fg};
+                selection-background-color: rgba(0,122,255,0.12);
             }}
             QTextEdit {{
                 background: {inp_bg}; border: 1px solid {inp_br};
-                border-radius: 6px; padding: 6px;
+                border-radius: 8px; padding: 6px;
                 color: {inp_fg}; font-size: 9pt;
             }}
             QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
+                background: {accent};
                 border: none; border-radius: 8px; padding: 10px;
-                color: white; font-size: 10pt; font-weight: bold;
+                color: white; font-size: 10pt; font-weight: 600;
             }}
             QPushButton:hover {{ opacity: 0.85; }}
             QPushButton#cancel {{
@@ -686,30 +597,32 @@ class SettingsDialog(QDialog):
                 background: {cancel_bg};
                 border: 1px solid {cancel_br};
                 color: {cancel_fg};
-                border-radius: 6px; padding: 6px; font-size: 11px;
+                border-radius: 8px; padding: 6px; font-size: 10px;
             }}
             QGroupBox {{
                 border: 1px solid {grp_br};
-                border-radius: 8px; margin-top: 8px; padding: 12px;
-                color: {grp_col}; font-size: 9pt;
+                border-radius: 10px; margin-top: 8px; padding: 12px;
+                color: {grp_col}; font-size: 9pt; font-weight: 600;
             }}
             QCheckBox {{ color: {chk_fg}; font-size: 10pt; spacing: 8px; }}
             QCheckBox::indicator {{
-                width: 16px; height: 16px;
-                border: 1px solid {chk_ind_br}; border-radius: 4px;
+                width: 18px; height: 18px;
+                border: 1px solid {chk_ind_br}; border-radius: 5px;
                 background: {chk_ind_bg};
             }}
             QCheckBox::indicator:checked {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
-                border-color: transparent;
+                background: {accent}; border-color: transparent;
             }}
             QSlider::groove:horizontal {{
-                height: 3px; background: {inp_br}; border-radius: 2px;
+                height: 3px; background: {inp_br}; border-radius: 1px;
             }}
             QSlider::handle:horizontal {{
-                width: 12px; height: 12px; margin: -5px 0;
-                background: {'#00d4ff' if dark else '#0284c7'}; border-radius: 6px;
+                width: 14px; height: 14px; margin: -6px 0;
+                background: {accent}; border-radius: 7px;
             }}
+            QScrollBar:vertical {{ background: transparent; width: 3px; }}
+            QScrollBar::handle:vertical {{ background: {scroll_h}; border-radius: 1px; min-height: 20px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
 
     def _build_ui(self):
@@ -772,9 +685,19 @@ class SettingsDialog(QDialog):
         dev_layout.addWidget(self.mic_combo, 0, 1)
         dev_layout.addWidget(self.sys_combo, 1, 1)
         dev_layout.addWidget(self.capture_mode_combo, 2, 1)
-        hint2 = QLabel("For system audio, select your VB-Cable or loopback device")
+        vb_row = QHBoxLayout()
+        hint2 = QLabel("System audio: select  CABLE Output (VB-Audio Virtual Cable)  from the list above.")
         hint2.setStyleSheet("color: #475569; font-size: 9pt;")
-        dev_layout.addWidget(hint2, 3, 0, 1, 2)
+        hint2.setWordWrap(True)
+        vb_btn = QPushButton("Get VB-Cable (free) ↗")
+        vb_btn.setObjectName("cancel")
+        vb_btn.setFixedHeight(24)
+        vb_btn.setStyleSheet("font-size: 8pt; padding: 2px 8px;")
+        import webbrowser
+        vb_btn.clicked.connect(lambda: webbrowser.open("https://vb-audio.com/Cable/"))
+        vb_row.addWidget(hint2, 1)
+        vb_row.addWidget(vb_btn)
+        dev_layout.addLayout(vb_row, 3, 0, 1, 2)
         layout.addWidget(dev_group)
 
         # Hotkey
@@ -852,7 +775,7 @@ class SettingsDialog(QDialog):
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setFixedHeight(80)
         self.prompt_edit.setPlaceholderText("Custom system prompt (leave blank to use default)…")
-        self.prompt_edit.setStyleSheet("QTextEdit { background: #1e2029; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px; color: #e2e8f0; font-size: 9pt; }")
+        self.prompt_edit.setStyleSheet("")  # inherits from dialog stylesheet
         self._load_prompt_for_mode(self.prompt_mode_combo.currentData())
         self.prompt_mode_combo.currentIndexChanged.connect(
             lambda: self._switch_prompt_mode()
@@ -900,25 +823,26 @@ class SettingsDialog(QDialog):
 
     def _show_changelog(self):
         dark = (self.config.get("theme", "dark") != "light")
-        dlg_bg  = "#0d0e12" if dark else "#f8fafc"
-        dlg_fg  = "#e2e8f0" if dark else "#1e293b"
-        txt_bg  = "#1e2029" if dark else "#ffffff"
-        txt_br  = "rgba(255,255,255,0.08)" if dark else "rgba(0,0,0,0.08)"
+        dlg_bg  = "#1C1C1E" if dark else "#F2F2F7"
+        dlg_fg  = "#F2F2F7" if dark else "#1C1C1E"
+        txt_bg  = "#2C2C2E" if dark else "#FFFFFF"
+        txt_br  = "rgba(255,255,255,0.08)" if dark else "rgba(60,60,67,0.1)"
+        accent  = "#00C7FF" if dark else "#007AFF"
 
         dlg = QDialog(self)
         dlg.setWindowTitle("What's New")
         dlg.setFixedSize(480, 520)
         dlg.setStyleSheet(f"""
-            QDialog {{ background: {dlg_bg}; font-family: Segoe UI; }}
+            QDialog {{ background: {dlg_bg}; font-family: 'Segoe UI', sans-serif; }}
             QTextEdit {{
                 background: {txt_bg}; color: {dlg_fg};
-                border: 1px solid {txt_br}; border-radius: 8px;
-                font-size: 10pt; padding: 8px;
+                border: 1px solid {txt_br}; border-radius: 10px;
+                font-size: 10pt; padding: 10px;
             }}
             QPushButton {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #0ea5e9,stop:1 #6366f1);
+                background: {accent};
                 border: none; border-radius: 8px; padding: 10px;
-                color: white; font-size: 10pt; font-weight: bold;
+                color: white; font-size: 10pt; font-weight: 600;
             }}
         """)
         v = QVBoxLayout(dlg)
@@ -992,12 +916,6 @@ class OverlayWindow(QWidget):
         self._drag_pos    = None
         self._export_entries = []   # list of suggestion dicts for session export
         self._saved_history  = load_history()  # persisted across sessions
-        import datetime as _dt
-        _now = _dt.datetime.now()
-        self._session_id    = _now.strftime("%Y%m%d_%H%M%S")
-        self._session_label = _now.strftime("%A %d %b %Y, %I:%M %p")
-        self._session_cards  = {}   # session_id -> card info dict
-        self._deep_dive_workers = []
         self._paused = False
         self._briefing = ""           # pre-session context fed to Claude
         self._display_transcript = "" # labelled transcript for the UI box
@@ -1029,11 +947,11 @@ class OverlayWindow(QWidget):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumSize(400, 500)
-        self.resize(420, 680)
+        self.setMinimumSize(420, 500)
+        self.resize(460, 700)
         # Position: right side of primary screen
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.width() - 440, 60)
+        self.move(screen.width() - 480, 60)
 
     # ── UI BUILD ──────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -1063,44 +981,39 @@ class OverlayWindow(QWidget):
         title = QLabel("PANDAI ASSISTANT")
         title.setObjectName("header_title")
 
-        self.mode_btn = QPushButton()
-        self.mode_btn.setObjectName("mode_btn")
-        self.mode_btn.setFixedHeight(24)
-        self.mode_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.mode_btn.clicked.connect(self._open_mode_menu)
-        self._update_mode_btn()
-
         settings_btn = QPushButton("⚙")
         settings_btn.setObjectName("icon_btn")
-        settings_btn.setFixedSize(26, 26)
+        settings_btn.setFixedSize(28, 28)
         settings_btn.clicked.connect(self._open_settings)
 
         clear_btn = QPushButton("↺")
         clear_btn.setObjectName("icon_btn")
-        clear_btn.setFixedSize(26, 26)
+        clear_btn.setFixedSize(28, 28)
         clear_btn.setToolTip("Clear session — wipes transcript and suggestions")
         clear_btn.clicked.connect(self._clear_session)
 
         self.export_btn = QPushButton("↓")
         self.export_btn.setObjectName("icon_btn")
-        self.export_btn.setFixedSize(26, 26)
+        self.export_btn.setFixedSize(28, 28)
         self.export_btn.setToolTip("Export session transcript and suggestions to .txt")
         self.export_btn.clicked.connect(self._export_session)
 
         hide_btn = QPushButton("✕")
         hide_btn.setObjectName("icon_btn")
-        hide_btn.setFixedSize(26, 26)
+        hide_btn.setFixedSize(28, 28)
         hide_btn.clicked.connect(self.close)
 
         hl.addWidget(self.status_dot)
         hl.addWidget(title)
         hl.addStretch()
-        hl.addWidget(self.mode_btn)
         hl.addWidget(clear_btn)
         hl.addWidget(self.export_btn)
         hl.addWidget(settings_btn)
         hl.addWidget(hide_btn)
         card_layout.addWidget(header)
+
+        # ── Mode pill bar
+        card_layout.addWidget(self._build_mode_bar())
 
         # ── Controls bar
         ctrl = QFrame()
@@ -1112,18 +1025,14 @@ class OverlayWindow(QWidget):
         row1 = QHBoxLayout()
         self.rec_btn = QPushButton("▶  Start Listening")
         self.rec_btn.setObjectName("rec_btn")
-        self.rec_btn.setFixedHeight(28)
+        self.rec_btn.setFixedHeight(30)
         self.rec_btn.clicked.connect(self._toggle_recording)
 
         self.pause_btn = QPushButton("⏸  Pause")
         self.pause_btn.setObjectName("pause_btn")
-        self.pause_btn.setFixedHeight(28)
+        self.pause_btn.setFixedHeight(30)
         self.pause_btn.clicked.connect(self._toggle_pause)
         self.pause_btn.hide()
-
-        self.level_meter = LevelMeter()
-        self.level_meter.setToolTip("Mic input level")
-        self.level_meter.hide()
 
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(20, 100)
@@ -1134,12 +1043,16 @@ class OverlayWindow(QWidget):
 
         row1.addWidget(self.rec_btn)
         row1.addWidget(self.pause_btn)
-        row1.addSpacing(6)
-        row1.addWidget(self.level_meter)
         row1.addStretch()
         row1.addWidget(QLabel("◑"))
         row1.addWidget(self.opacity_slider)
         cl.addLayout(row1)
+
+        # Full-width VU meter strip — shown only when recording
+        self.level_meter = LevelMeter()
+        self.level_meter.setToolTip("Mic input level")
+        self.level_meter.hide()
+        cl.addWidget(self.level_meter)
 
         card_layout.addWidget(ctrl)
 
@@ -1315,414 +1228,306 @@ class OverlayWindow(QWidget):
         return lbl
 
     def _load_saved_history(self):
-        """Group saved history by session_id and build session cards."""
+        """Populate history tab with entries persisted from previous sessions."""
         if not self._saved_history:
             return
-        # Remove placeholder
+        # Show a divider so users know these are past sessions
+        divider = QLabel("— Previous Sessions —")
+        divider.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        divider.setStyleSheet("color: #475569; font-size: 8pt; padding: 4px 0;")
+        insert_pos = max(0, self.history_layout.count() - 1)
+        self.history_layout.insertWidget(insert_pos, divider)
+        # Remove placeholder if present
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
             if first and first.objectName() == "placeholder_text":
                 self.history_layout.removeWidget(first)
                 first.deleteLater()
-        # Group entries by session_id preserving order
-        from collections import OrderedDict
-        sessions = OrderedDict()
-        for entry in self._saved_history:
-            sid = entry.get("session_id", "legacy")
-            if sid not in sessions:
-                sessions[sid] = {
-                    "label": entry.get("session_label", "Previous Session"),
-                    "entries": [],
-                }
-            sessions[sid]["entries"].append(entry)
-        # Build a card per past session (skip current session — built live)
-        for sid, sdata in sessions.items():
-            if sid == self._session_id:
-                continue
-            for entry in sdata["entries"]:
-                self._add_history_entry(
-                    {"response": entry.get("response", ""),
-                     "topics":   entry.get("topics", []),
-                     "followups": entry.get("followups", [])},
-                    entry.get("snippet", ""),
-                    time_str=entry.get("time", ""),
-                    persist=False,
-                    session_id=sid,
-                    session_label=sdata["label"],
-                )
+        for entry in self._saved_history[-20:]:
+            data = {
+                "response":  entry.get("response", ""),
+                "topics":    entry.get("topics", []),
+                "followups": entry.get("followups", []),
+            }
+            self._add_history_entry(data, entry.get("snippet", ""),
+                                    time_str=entry.get("time", ""), persist=False)
 
-    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "",
-                           persist: bool = True, session_id: str = None,
-                           session_label: str = None):
-        """Add a point to the appropriate session card, creating it if needed."""
+    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
+        """Add a collapsed history card for a past suggestion."""
         import datetime
-        sid    = session_id    or self._session_id
-        slabel = session_label or self._session_label
         entry = {
-            "session_id":    sid,
-            "session_label": slabel,
-            "time":     time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "snippet":  snippet,
+            "time": time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "snippet": snippet,
             "response": data.get("response", ""),
-            "topics":   data.get("topics", []),
+            "topics": data.get("topics", []),
             "followups": data.get("followups", []),
         }
         self._export_entries.append(entry)
         if persist:
             self._saved_history.append(entry)
             save_history(self._saved_history)
-        # Remove placeholder if still present
+        # Remove placeholder if present
         if self.history_layout.count() > 0:
             first = self.history_layout.itemAt(0).widget()
             if first and first.objectName() == "placeholder_text":
                 self.history_layout.removeWidget(first)
                 first.deleteLater()
-        # Create session card on first use
-        if sid not in self._session_cards:
-            self._build_session_card(sid, slabel)
-        self._build_point_card(entry, self._session_cards[sid])
 
-    # ── SESSION CARD ──────────────────────────────────────────────────────────
-    def _build_session_card(self, session_id: str, session_label: str):
-        """Create a collapsible session container in the history tab."""
-        sf = QFrame()
-        sf.setObjectName("history_card")
-        sf.setStyleSheet("""
-            QFrame#history_card {
-                background: rgba(255,255,255,4);
-                border: 1px solid rgba(255,255,255,8);
-                border-radius: 14px;
-            }
+        # Build card
+        d = (self._theme != "light")
+        h_card_bg    = "rgba(44,44,46,0.5)"       if d else "rgba(255,255,255,0.78)"
+        h_card_br    = "rgba(255,255,255,0.06)"   if d else "rgba(60,60,67,0.09)"
+        h_card_hbg   = "rgba(58,58,60,0.7)"       if d else "rgba(255,255,255,0.96)"
+        h_card_hbr   = "rgba(0,199,255,0.18)"     if d else "rgba(0,122,255,0.18)"
+        h_snip_col   = "rgba(235,235,245,0.32)"   if d else "rgba(60,60,67,0.38)"
+        h_tog_bg     = "rgba(255,255,255,0.07)"   if d else "rgba(0,0,0,0.05)"
+        h_tog_br     = "rgba(255,255,255,0.1)"    if d else "rgba(60,60,67,0.13)"
+        h_tog_c      = "rgba(235,235,245,0.4)"    if d else "rgba(60,60,67,0.45)"
+        h_tog_hc     = "#00C7FF"                  if d else "#007AFF"
+        h_tog_hbr    = "rgba(0,199,255,0.3)"      if d else "rgba(0,122,255,0.3)"
+        h_resp_col   = "rgba(235,235,245,0.82)"   if d else "#1C1C1E"
+        h_copy_br    = "rgba(255,255,255,0.1)"    if d else "rgba(60,60,67,0.13)"
+        h_copy_c     = "rgba(235,235,245,0.38)"   if d else "rgba(60,60,67,0.42)"
+
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame#history_card {{
+                background: {h_card_bg};
+                border: 1px solid {h_card_br};
+                border-radius: 10px;
+            }}
+            QFrame#history_card:hover {{
+                background: {h_card_hbg};
+                border-color: {h_card_hbr};
+            }}
         """)
-        sf.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        sf_layout = QVBoxLayout(sf)
-        sf_layout.setContentsMargins(10, 8, 10, 8)
-        sf_layout.setSpacing(4)
+        card.setObjectName("history_card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(10, 8, 10, 8)
+        card_layout.setSpacing(4)
 
-        # Header row
+        # Header row: snippet + expand toggle
         header_row = QHBoxLayout()
-        header_lbl = QLabel(f"📅  {session_label}")
-        header_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
-        header_lbl.setStyleSheet("color: #94a3b8;")
-        count_lbl = QLabel("0 points")
-        count_lbl.setFont(QFont("Segoe UI", 8))
-        count_lbl.setStyleSheet("color: #475569;")
-        expand_btn = QPushButton("▾")
-        expand_btn.setFont(QFont("Segoe UI", 9))
-        expand_btn.setFixedSize(24, 24)
-        expand_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #64748b; }"
-            "QPushButton:hover { color: #00d4ff; }"
-        )
-        delete_btn = QPushButton("🗑")
-        delete_btn.setFont(QFont("Segoe UI", 9))
-        delete_btn.setFixedSize(24, 24)
-        delete_btn.setToolTip("Delete this session")
-        delete_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #475569; }"
-            "QPushButton:hover { color: #f87171; }"
-        )
-        header_row.addWidget(header_lbl, 1)
-        header_row.addWidget(count_lbl)
-        header_row.addWidget(expand_btn)
-        header_row.addWidget(delete_btn)
-        sf_layout.addLayout(header_row)
+        snippet_lbl = QLabel(snippet[:80] + ("…" if len(snippet) > 80 else ""))
+        snippet_lbl.setFont(QFont("Segoe UI", 9))
+        snippet_lbl.setStyleSheet(f"color: {h_snip_col}; font-style: italic;")
+        snippet_lbl.setWordWrap(False)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: rgba(255,255,255,8);")
-        sf_layout.addWidget(sep)
-
-        # Collapsible points container
-        points_widget = QWidget()
-        points_layout = QVBoxLayout(points_widget)
-        points_layout.setContentsMargins(0, 4, 0, 4)
-        points_layout.setSpacing(4)
-        sf_layout.addWidget(points_widget)
-
-        # Deep Dive button
-        dive_btn = QPushButton("Deep Dive on Selected (0)")
-        dive_btn.setFont(QFont("Segoe UI", 9))
-        dive_btn.setEnabled(False)
-        dive_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(99,102,241,10);
-                border: none;
-                border-radius: 10px; color: #6366f1; padding: 7px 14px;
-                font-size: 9pt;
-            }
-            QPushButton:hover:enabled { background: rgba(99,102,241,22); color: #818cf8; }
-            QPushButton:disabled { color: #1e293b; }
+        toggle_btn = QPushButton("▾ Show")
+        toggle_btn.setFont(QFont("Segoe UI", 8))
+        toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {h_tog_bg};
+                border: 1px solid {h_tog_br};
+                border-radius: 6px;
+                color: {h_tog_c};
+                padding: 2px 8px;
+            }}
+            QPushButton:hover {{ color: {h_tog_hc}; border-color: {h_tog_hbr}; }}
         """)
-        sf_layout.addWidget(dive_btn)
+        toggle_btn.setFixedWidth(65)
+        header_row.addWidget(snippet_lbl, 1)
+        header_row.addWidget(toggle_btn)
+        card_layout.addLayout(header_row)
 
-        def _toggle():
-            v = not points_widget.isVisible()
-            points_widget.setVisible(v)
-            dive_btn.setVisible(v)
-            expand_btn.setText("▴" if v else "▾")
-        expand_btn.clicked.connect(_toggle)
+        # Collapsible detail area
+        detail_widget = QWidget()
+        detail_widget.setVisible(False)
+        detail_layout = QVBoxLayout(detail_widget)
+        detail_layout.setContentsMargins(0, 6, 0, 0)
+        detail_layout.setSpacing(6)
 
-        card_info = {
-            "frame":         sf,
-            "points_layout": points_layout,
-            "count_lbl":     count_lbl,
-            "checkboxes":    [],
-            "entries":       [],
-            "point_frames":  [],
-            "dive_btn":      dive_btn,
-            "delete_btn":    delete_btn,
-        }
-        self._session_cards[session_id] = card_info
-        dive_btn.clicked.connect(lambda: self._run_deep_dive(session_id))
-        delete_btn.clicked.connect(lambda: self._delete_selected(session_id))
+        # Response
+        resp_lbl = QLabel(data.get("response", ""))
+        resp_lbl.setFont(QFont("Segoe UI", 10))
+        resp_lbl.setStyleSheet(f"color: {h_resp_col};")
+        resp_lbl.setWordWrap(True)
+        resp_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
+        copy_btn = QPushButton("Copy response")
+        copy_btn.setFont(QFont("Segoe UI", 8))
+        copy_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid {h_copy_br};
+                border-radius: 6px; color: {h_copy_c};
+                padding: 2px 10px; max-width: 110px; font-size: 9pt;
+            }}
+            QPushButton:hover {{ border-color: {h_tog_hbr}; color: {h_tog_hc}; }}
+        """)
+        response_text = data.get("response", "")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(response_text))
+
+        detail_layout.addWidget(resp_lbl)
+        detail_layout.addWidget(copy_btn)
+
+        # Topics
+        for t in data.get("topics", []):
+            t_row = QHBoxLayout()
+            t_icon = QLabel(t.get("icon", "🔗"))
+            t_icon.setFont(QFont("Segoe UI", 10))
+            t_icon.setFixedWidth(20)
+            t_title = QLabel(f"<b>{t.get('title','')}</b> — {t.get('detail','')}")
+            t_title.setFont(QFont("Segoe UI", 9))
+            t_title.setStyleSheet(f"color: {h_snip_col};")
+            t_title.setWordWrap(True)
+            t_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            t_row.addWidget(t_icon)
+            t_row.addWidget(t_title, 1)
+            detail_layout.addLayout(t_row)
+
+        card_layout.addWidget(detail_widget)
+
+        # Toggle logic
+        def toggle():
+            visible = not detail_widget.isVisible()
+            detail_widget.setVisible(visible)
+            toggle_btn.setText("▴ Hide" if visible else "▾ Show")
+        toggle_btn.clicked.connect(toggle)
+
+        # Insert before the stretch at the end
         insert_pos = max(0, self.history_layout.count() - 1)
-        self.history_layout.insertWidget(insert_pos, sf)
+        self.history_layout.insertWidget(insert_pos, card)
 
-    # ── POINT CARD ────────────────────────────────────────────────────────────
-    def _build_point_card(self, entry: dict, card_info: dict):
-        """Add an individual captured point to a session card."""
-        checkboxes   = card_info["checkboxes"]
-        dive_btn     = card_info["dive_btn"]
-        points_layout = card_info["points_layout"]
-        entries_list  = card_info["entries"]
-        count_lbl     = card_info["count_lbl"]
-        entries_list.append(entry)
-
-        pf = QFrame()
-        pf.setStyleSheet("""
-            QFrame {
-                background: rgba(255,255,255,3);
-                border: none;
-                border-radius: 8px;
-            }
-            QFrame:hover { background: rgba(255,255,255,6); }
-        """)
-        pf_layout = QVBoxLayout(pf)
-        pf_layout.setContentsMargins(8, 6, 8, 6)
-        pf_layout.setSpacing(3)
-
-        top_row = QHBoxLayout()
-        cb = QCheckBox()
-        cb.setStyleSheet("QCheckBox { spacing: 4px; }")
-
-        snippet = entry.get("snippet", "")
-        snip_lbl = QLabel(snippet[:60] + ("…" if len(snippet) > 60 else ""))
-        snip_lbl.setFont(QFont("Segoe UI", 9))
-        snip_lbl.setStyleSheet("color: #64748b; font-style: italic;")
-
-        time_str = entry.get("time", "")
-        time_lbl = QLabel(time_str[11:16] if len(time_str) >= 16 else time_str)
-        time_lbl.setFont(QFont("Segoe UI", 8))
-        time_lbl.setStyleSheet("color: #334155;")
-
-        detail_toggle = QPushButton("▾")
-        detail_toggle.setFont(QFont("Segoe UI", 8))
-        detail_toggle.setFixedSize(20, 20)
-        detail_toggle.setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #475569; }"
-            "QPushButton:hover { color: #00d4ff; }"
-        )
-        top_row.addWidget(cb)
-        top_row.addWidget(snip_lbl, 1)
-        top_row.addWidget(time_lbl)
-        top_row.addWidget(detail_toggle)
-        pf_layout.addLayout(top_row)
-
-        # Collapsible detail
-        detail_w = QWidget()
-        detail_w.setVisible(False)
-        dl = QVBoxLayout(detail_w)
-        dl.setContentsMargins(24, 4, 0, 0)
-        dl.setSpacing(3)
-
-        if entry.get("response"):
-            resp_lbl = QLabel(entry["response"])
-            resp_lbl.setFont(QFont("Segoe UI", 9))
-            resp_lbl.setStyleSheet("color: #cbd5e1;")
-            resp_lbl.setWordWrap(True)
-            resp_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            dl.addWidget(resp_lbl)
-
-        for t in entry.get("topics", []):
-            t_lbl = QLabel(f"{t.get('icon','🔗')} <b>{t.get('title','')}</b> — {t.get('detail','')}")
-            t_lbl.setFont(QFont("Segoe UI", 8))
-            t_lbl.setStyleSheet("color: #94a3b8;")
-            t_lbl.setWordWrap(True)
-            dl.addWidget(t_lbl)
-
-        pf_layout.addWidget(detail_w)
-
-        def _toggle_detail():
-            v = not detail_w.isVisible()
-            detail_w.setVisible(v)
-            detail_toggle.setText("▴" if v else "▾")
-        detail_toggle.clicked.connect(_toggle_detail)
-
-        def _update_dive():
-            n = sum(1 for c in checkboxes if c.isChecked())
-            dive_btn.setText(f"Deep Dive on Selected ({n})")
-            dive_btn.setEnabled(n > 0)
-            card_info["delete_btn"].setEnabled(n > 0)
-        cb.stateChanged.connect(lambda _: _update_dive())
-
-        checkboxes.append(cb)
-        card_info["point_frames"].append(pf)
-        n = len(entries_list)
-        count_lbl.setText(f"{n} point{'s' if n != 1 else ''}")
-        points_layout.addWidget(pf)
-
+        # Scroll history to bottom
         QTimer.singleShot(50, lambda: self.history_scroll.verticalScrollBar().setValue(
             self.history_scroll.verticalScrollBar().maximum()
         ))
 
-    # ── DEEP DIVE ─────────────────────────────────────────────────────────────
-    def _run_deep_dive(self, session_id: str):
-        card_info = self._session_cards.get(session_id)
-        if not card_info:
-            return
-        selected = [
-            e for e, cb in zip(card_info["entries"], card_info["checkboxes"])
-            if cb.isChecked()
-        ]
-        if not selected:
-            return
-        api_key = self.config.get("api_key", "")
-        if not api_key:
-            return
+    # ── MODE BAR ──────────────────────────────────────────────────────────────
+    def _build_mode_bar(self):
+        """Horizontal row of mode selection pills."""
+        bar = QFrame()
+        bar.setObjectName("mode_bar")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(12, 7, 12, 7)
+        bl.setSpacing(6)
+        self._mode_btns = {}
+        for key, label in MODE_LABELS.items():
+            btn = QPushButton(label)
+            btn.setObjectName("mode_pill")
+            btn.setFixedHeight(24)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.clicked.connect(lambda checked, m=key: self._set_mode(m))
+            self._mode_btns[key] = btn
+            bl.addWidget(btn)
+        self._update_mode_pills()
+        return bar
 
-        dark = (self._theme != "light")
-        dlg_bg = "#0d0e12" if dark else "#f8fafc"
-        dlg_fg = "#e2e8f0" if dark else "#1e293b"
-        txt_bg = "#1e2029" if dark else "#ffffff"
+    def _set_mode(self, mode: str):
+        self.mode = mode
+        self.config["mode"] = mode
+        save_config(self.config)
+        self._update_mode_pills()
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Deep Dive Analysis")
-        dlg.setFixedSize(500, 540)
-        dlg.setStyleSheet(f"""
-            QDialog {{ background: {dlg_bg}; font-family: Segoe UI; }}
-            QTextEdit {{
-                background: {txt_bg}; color: {dlg_fg};
-                border: 1px solid rgba(99,102,241,40);
-                border-radius: 8px; font-size: 10pt; padding: 8px;
-            }}
-            QPushButton {{
-                background: rgba(99,102,241,30);
-                border: 1px solid rgba(99,102,241,80);
-                border-radius: 8px; padding: 8px 16px;
-                color: #818cf8; font-size: 10pt; font-weight: bold;
-            }}
-            QPushButton:hover {{ background: rgba(99,102,241,50); }}
-        """)
-        v = QVBoxLayout(dlg)
-        v.setContentsMargins(16, 12, 16, 12)
-        v.setSpacing(10)
-        title_lbl = QLabel("🔬  Deep Dive Analysis")
-        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
-        title_lbl.setStyleSheet(f"color: {dlg_fg};")
-        v.addWidget(title_lbl)
-        result_box = QTextEdit()
-        result_box.setReadOnly(True)
-        result_box.setPlainText("Analyzing selected topics…")
-        v.addWidget(result_box)
-        btn_row = QHBoxLayout()
-        copy_btn = QPushButton("Copy")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(result_box.toPlainText()))
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(copy_btn)
-        btn_row.addWidget(close_btn)
-        v.addLayout(btn_row)
-
-        worker = DeepDiveWorker(api_key, selected)
-        worker.result.connect(result_box.setPlainText)
-        worker.error.connect(lambda e: result_box.setPlainText(f"Error: {e}"))
-        self._deep_dive_workers.append(worker)
-        worker.finished.connect(
-            lambda: self._deep_dive_workers.remove(worker)
-            if worker in self._deep_dive_workers else None
-        )
-        worker.start()
-        dlg.exec()
-
-    # ── DELETE SELECTED POINTS ────────────────────────────────────────────────
-    def _delete_selected(self, session_id: str):
-        """Delete only the checked point cards within a session."""
-        card_info = self._session_cards.get(session_id)
-        if not card_info:
+    def _update_mode_pills(self):
+        if not hasattr(self, '_mode_btns'):
             return
-        selected_indices = [i for i, cb in enumerate(card_info["checkboxes"]) if cb.isChecked()]
-        if not selected_indices:
-            return
-        selected_entries = [card_info["entries"][i] for i in selected_indices]
-        # Remove widgets and parallel lists in reverse order to preserve indices
-        for i in sorted(selected_indices, reverse=True):
-            card_info["point_frames"][i].deleteLater()
-            card_info["point_frames"].pop(i)
-            card_info["checkboxes"].pop(i)
-            card_info["entries"].pop(i)
-        # Update count label and button states
-        n = len(card_info["entries"])
-        card_info["count_lbl"].setText(f"{n} point{'s' if n != 1 else ''}")
-        card_info["dive_btn"].setText("Deep Dive on Selected (0)")
-        card_info["dive_btn"].setEnabled(False)
-        card_info["delete_btn"].setEnabled(False)
-        # Purge from persistent history using time as unique key per session
-        removed_times = {e.get("time") for e in selected_entries}
-        self._saved_history = [
-            e for e in self._saved_history
-            if not (e.get("session_id") == session_id and e.get("time") in removed_times)
-        ]
-        self._export_entries = [
-            e for e in self._export_entries
-            if not (e.get("session_id") == session_id and e.get("time") in removed_times)
-        ]
-        save_history(self._saved_history)
-        # If session is now empty, remove its card entirely
-        if not card_info["entries"]:
-            card_info["frame"].deleteLater()
-            self._session_cards.pop(session_id, None)
-            if not self._session_cards:
-                self.history_layout.insertWidget(0, self._make_history_placeholder())
+        d = (self._theme != "light")
+        for key, btn in self._mode_btns.items():
+            c = MODE_COLORS[key]
+            if key == self.mode:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {c}33;
+                        border: 1px solid {c}99;
+                        border-radius: 12px;
+                        color: {c};
+                        font-size: 8pt; font-weight: 700;
+                        padding: 2px 10px;
+                    }}
+                """)
+            else:
+                unsel_br = "rgba(255,255,255,0.1)" if d else "rgba(60,60,67,0.15)"
+                unsel_c  = "rgba(235,235,245,0.35)" if d else "rgba(60,60,67,0.4)"
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        border: 1px solid {unsel_br};
+                        border-radius: 12px;
+                        color: {unsel_c};
+                        font-size: 8pt; font-weight: 600;
+                        padding: 2px 10px;
+                    }}
+                    QPushButton:hover {{
+                        background: {c}18;
+                        border-color: {c}55;
+                        color: {c}cc;
+                    }}
+                """)
 
     # ── STYLES ────────────────────────────────────────────────────────────────
     def _apply_styles(self):
         d = (self._theme != "light")
 
-        # ── colour palette ─────────────────────────────────────────────────
-        c_card      = "rgba(9,10,14,242)"        if d else "rgba(248,250,252,248)"
-        b_main      = "rgba(255,255,255,10)"     if d else "rgba(0,0,0,8)"
-        c_header    = "rgba(255,255,255,4)"      if d else "rgba(0,0,0,3)"
-        c_ctrl      = "rgba(255,255,255,3)"      if d else "rgba(0,0,0,2)"
-        t_title     = "#475569"                  if d else "#94a3b8"
-        t_primary   = "#e2e8f0"                  if d else "#0f172a"
-        t_second    = "#94a3b8"                  if d else "#475569"
-        accent      = "#00d4ff"                  if d else "#0284c7"
-        accent_bg   = "rgba(0,212,255,7)"        if d else "rgba(2,132,199,5)"
-        accent_br   = "rgba(0,212,255,30)"       if d else "rgba(2,132,199,25)"
-        accent_l3   = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
-        accent_mb   = "rgba(0,212,255,15)"       if d else "rgba(2,132,199,10)"
-        accent_m3   = "rgba(0,212,255,60)"       if d else "rgba(2,132,199,50)"
-        accent_sel  = "rgba(0,212,255,50)"       if d else "rgba(2,132,199,40)"
-        c_input     = "rgba(255,255,255,6)"      if d else "rgba(0,0,0,4)"
-        b_input     = "rgba(255,255,255,12)"     if d else "rgba(0,0,0,10)"
-        c_dropdown  = "#13141a"                  if d else "#f8fafc"
-        t_input     = "#e2e8f0"                  if d else "#334155"
-        c_trans     = "rgba(255,255,255,5)"      if d else "rgba(0,0,0,3)"
-        t_trans     = "#cbd5e1"                  if d else "#334155"
-        c_scroll    = "rgba(255,255,255,30)"     if d else "rgba(0,0,0,20)"
-        t_place     = "#334155"                  if d else "#94a3b8"
-        t_section   = "#334155"                  if d else "#94a3b8"
-        dot_active  = "#00d4ff"                  if d else "#0284c7"
-        dot_inact   = "#334155"                  if d else "#cbd5e1"
-        c_resp_txt  = "#e2e8f0"                  if d else "#0f172a"
-        t_topics    = "#94a3b8"                  if d else "#475569"
-        groove_bg   = "rgba(255,255,255,15)"     if d else "rgba(0,0,0,12)"
-        icon_hov_bg = "rgba(255,255,255,8)"      if d else "rgba(0,0,0,6)"
-        b_sel       = "rgba(99,102,241,35)"      if d else "rgba(99,102,241,40)"
-        c_brief_bg  = "rgba(255,255,255,4)"      if d else "rgba(255,255,255,0.7)"
-        t_brief     = "#cbd5e1"                  if d else "#334155"
+        # ── Apple-inspired colour palette ───────────────────────────────────
+        if d:
+            c_card      = "rgba(28,28,30,0.96)"
+            b_main      = "rgba(255,255,255,0.09)"
+            c_header    = "rgba(255,255,255,0.04)"
+            c_ctrl      = "rgba(255,255,255,0.03)"
+            c_mode_bar  = "rgba(255,255,255,0.02)"
+            t_title     = "rgba(235,235,245,0.45)"
+            t_primary   = "#F2F2F7"
+            t_second    = "rgba(235,235,245,0.6)"
+            t_section   = "rgba(235,235,245,0.3)"
+            t_place     = "rgba(235,235,245,0.22)"
+            accent      = "#00C7FF"
+            accent_bg   = "rgba(0,199,255,0.1)"
+            accent_br   = "rgba(0,199,255,0.22)"
+            accent_str  = "#00C7FF"
+            b_input     = "rgba(255,255,255,0.08)"
+            c_input     = "rgba(44,44,46,0.7)"
+            c_dropdown  = "#2C2C2E"
+            t_input     = "#F2F2F7"
+            c_trans     = "rgba(44,44,46,0.65)"
+            t_trans     = "rgba(235,235,245,0.85)"
+            c_scroll    = "rgba(255,255,255,0.18)"
+            dot_active  = "#34C759"
+            dot_inact   = "rgba(235,235,245,0.2)"
+            c_resp_txt  = "#F2F2F7"
+            groove_bg   = "rgba(255,255,255,0.12)"
+            icon_hov_bg = "rgba(255,255,255,0.09)"
+            rec_idle_bg = "rgba(52,199,89,0.13)"
+            rec_idle_br = "rgba(52,199,89,0.35)"
+            rec_idle_c  = "#34C759"
+            rec_act_bg  = "rgba(255,69,58,0.13)"
+            rec_act_br  = "rgba(255,69,58,0.35)"
+            rec_act_c   = "#FF453A"
+        else:
+            c_card      = "rgba(242,242,247,0.97)"
+            b_main      = "rgba(60,60,67,0.13)"
+            c_header    = "rgba(0,0,0,0.03)"
+            c_ctrl      = "rgba(0,0,0,0.02)"
+            c_mode_bar  = "rgba(0,0,0,0.015)"
+            t_title     = "rgba(60,60,67,0.45)"
+            t_primary   = "#1C1C1E"
+            t_second    = "rgba(60,60,67,0.65)"
+            t_section   = "rgba(60,60,67,0.38)"
+            t_place     = "rgba(60,60,67,0.3)"
+            accent      = "#007AFF"
+            accent_bg   = "rgba(0,122,255,0.08)"
+            accent_br   = "rgba(0,122,255,0.2)"
+            accent_str  = "#007AFF"
+            b_input     = "rgba(60,60,67,0.13)"
+            c_input     = "rgba(255,255,255,0.88)"
+            c_dropdown  = "#FFFFFF"
+            t_input     = "#1C1C1E"
+            c_trans     = "rgba(255,255,255,0.88)"
+            t_trans     = "#1C1C1E"
+            c_scroll    = "rgba(60,60,67,0.22)"
+            dot_active  = "#34C759"
+            dot_inact   = "rgba(60,60,67,0.25)"
+            c_resp_txt  = "#1C1C1E"
+            groove_bg   = "rgba(60,60,67,0.13)"
+            icon_hov_bg = "rgba(0,0,0,0.06)"
+            rec_idle_bg = "rgba(52,199,89,0.1)"
+            rec_idle_br = "rgba(52,199,89,0.3)"
+            rec_idle_c  = "#248A3D"
+            rec_act_bg  = "rgba(255,69,58,0.1)"
+            rec_act_br  = "rgba(255,69,58,0.3)"
+            rec_act_c   = "#D70015"
         # ───────────────────────────────────────────────────────────────────
 
         self.setStyleSheet(f"""
@@ -1731,123 +1536,127 @@ class OverlayWindow(QWidget):
             #card {{
                 background: {c_card};
                 border: 1px solid {b_main};
-                border-radius: 20px;
+                border-radius: 18px;
             }}
 
             #header {{
                 background: {c_header};
-                border-top-left-radius: 20px;
-                border-top-right-radius: 20px;
+                border-bottom: 1px solid {b_main};
+                border-top-left-radius: 18px;
+                border-top-right-radius: 18px;
             }}
 
             #header_title {{
-                font-size: 8pt; font-weight: 600;
-                letter-spacing: 1.5px; color: {t_title};
+                font-size: 9pt; font-weight: 700;
+                letter-spacing: 2px; color: {t_title};
             }}
 
-            #dot_inactive {{ color: {dot_inact}; font-size: 7pt; }}
-            #dot_active   {{ color: {dot_active}; font-size: 7pt; }}
+            #dot_inactive {{ color: {dot_inact}; font-size: 9pt; }}
+            #dot_active   {{ color: {dot_active}; font-size: 9pt; }}
 
-            #mode_btn {{
-                font-size: 8pt; font-weight: 600;
-                border-radius: 10px; padding: 2px 10px;
-                border: 1px solid {accent_m3};
-                background: {accent_mb}; color: {accent};
+            #mode_bar {{
+                background: {c_mode_bar};
+                border-bottom: 1px solid {b_main};
             }}
-            #mode_btn:hover {{ background: {accent_l3}; }}
 
             #icon_btn {{
                 background: transparent; border: none;
-                color: {t_second}; font-size: 10pt; border-radius: 6px;
+                color: {t_second}; font-size: 11pt; border-radius: 7px;
             }}
             #icon_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
 
-            #ctrl_bar {{ background: {c_ctrl}; }}
+            #ctrl_bar {{
+                border-bottom: 1px solid {b_main};
+                background: {c_ctrl};
+            }}
 
             #rec_btn {{
-                background: {c_input};
-                border: 1px solid {b_input};
-                border-radius: 10px; color: {t_primary};
+                background: {rec_idle_bg};
+                border: 1px solid {rec_idle_br};
+                border-radius: 10px; color: {rec_idle_c};
                 font-size: 9pt; font-weight: 600; padding: 0 14px;
             }}
-            #rec_btn:hover {{ background: rgba(255,255,255,10); }}
+            #rec_btn:hover {{ background: rgba(52,199,89,0.22); }}
             #rec_btn[recording=true] {{
-                background: rgba(239,68,68,18);
-                border-color: rgba(239,68,68,80);
-                color: #fca5a5;
+                background: {rec_act_bg};
+                border-color: {rec_act_br};
+                color: {rec_act_c};
             }}
+            #rec_btn[recording=true]:hover {{ background: rgba(255,69,58,0.22); }}
 
             #pause_btn {{
-                background: {c_input};
+                background: transparent;
                 border: 1px solid {b_input};
                 border-radius: 10px; color: {t_second};
-                font-size: 9pt; font-weight: 600; padding: 0 12px;
+                font-size: 9pt; font-weight: 600; padding: 0 10px;
             }}
-            #pause_btn:hover {{ background: rgba(255,255,255,10); color: {t_primary}; }}
+            #pause_btn:hover {{ background: {icon_hov_bg}; color: {t_primary}; }}
 
             #device_combo {{
                 background: {c_input};
                 border: 1px solid {b_input};
                 border-radius: 8px; color: {t_input}; font-size: 9pt;
-                padding: 2px 8px;
+                padding: 2px 6px;
             }}
             #device_combo QAbstractItemView {{
                 background: {c_dropdown}; color: {t_input};
-                selection-background-color: {accent_sel};
+                selection-background-color: {accent_bg};
             }}
 
             #briefing_panel {{
-                background: rgba(99,102,241,6);
-                border-bottom: 1px solid rgba(99,102,241,20);
+                background: rgba(99,102,241,0.06);
+                border-bottom: 1px solid rgba(99,102,241,0.18);
             }}
             #briefing_edit {{
-                background: {c_brief_bg};
-                border: 1px solid {b_sel};
-                border-radius: 8px; color: {t_brief};
-                font-size: 9pt; padding: 6px 8px;
+                background: {c_input};
+                border: 1px solid {b_input};
+                border-radius: 8px; color: {t_input};
+                font-size: 9pt; padding: 4px 6px;
             }}
             #briefing_toggle_btn {{
                 background: transparent; border: none;
-                color: #6366f1; font-size: 8pt; padding: 0;
+                color: rgba(120,120,255,0.75); font-size: 8pt; padding: 0;
             }}
-            #briefing_toggle_btn:hover {{ color: #a5b4fc; }}
+            #briefing_toggle_btn:hover {{ color: rgba(160,160,255,1.0); }}
 
             #banner_loading {{
-                background: rgba(245,158,11,12);
-                border-bottom: 1px solid rgba(245,158,11,35);
-                color: #fbbf24; font-size: 9pt; padding: 5px 12px;
+                background: rgba(255,159,10,0.1);
+                border-bottom: 1px solid rgba(255,159,10,0.28);
+                color: #FF9F0A; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_ok {{
-                background: rgba(16,185,129,10);
-                border-bottom: 1px solid rgba(16,185,129,35);
-                color: #34d399; font-size: 9pt; padding: 5px 12px;
+                background: rgba(52,199,89,0.09);
+                border-bottom: 1px solid rgba(52,199,89,0.28);
+                color: #34C759; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_error {{
-                background: rgba(239,68,68,10);
-                border-bottom: 1px solid rgba(239,68,68,35);
-                color: #f87171; font-size: 9pt; padding: 5px 12px;
+                background: rgba(255,69,58,0.09);
+                border-bottom: 1px solid rgba(255,69,58,0.28);
+                color: #FF453A; font-size: 9pt; padding: 5px 14px;
             }}
             #banner_hidden {{ max-height: 0px; padding: 0px; border: none; }}
             #banner_update_frame {{
-                background: rgba(124,58,237,12);
-                border-bottom: 1px solid rgba(124,58,237,40);
+                background: rgba(191,90,242,0.1);
+                border-bottom: 1px solid rgba(191,90,242,0.25);
             }}
-            #banner_update_label {{ color: #a78bfa; font-size: 9pt; }}
+            #banner_update_label {{
+                color: #BF5AF2; font-size: 9pt;
+            }}
             #update_now_btn {{
-                background: rgba(124,58,237,140);
-                color: white; font-size: 8pt; font-weight: 600;
-                border: 1px solid rgba(124,58,237,180);
-                border-radius: 8px; padding: 3px 10px;
+                background: rgba(191,90,242,0.18);
+                color: #BF5AF2; font-size: 8pt; font-weight: 600;
+                border: 1px solid rgba(191,90,242,0.35);
+                border-radius: 6px; padding: 3px 10px;
             }}
-            #update_now_btn:hover {{ background: rgba(124,58,237,200); }}
-            #update_now_btn:disabled {{ background: rgba(124,58,237,50); color: rgba(255,255,255,80); }}
+            #update_now_btn:hover {{ background: rgba(191,90,242,0.3); }}
+            #update_now_btn:disabled {{ color: rgba(191,90,242,0.4); }}
 
             #section_frame {{ background: transparent; }}
 
             #section_label {{
-                font-size: 7pt; font-weight: 600;
-                letter-spacing: 1.5px; color: {t_section};
-                padding: 6px 0 3px 0;
+                font-size: 8pt; font-weight: 600;
+                letter-spacing: 1px; color: {t_section};
+                padding: 4px 0 2px 0;
             }}
 
             #transcript_box {{
@@ -1855,23 +1664,21 @@ class OverlayWindow(QWidget):
                 border: 1px solid {b_input};
                 border-radius: 10px; color: {t_trans};
                 font-size: 10pt; padding: 6px 8px;
-                selection-background-color: {accent_sel};
+                selection-background-color: {accent_bg};
             }}
-
-            QScrollBar:vertical {{ background: transparent; width: 3px; margin: 4px 0; }}
-            QScrollBar::handle:vertical {{
-                background: {c_scroll}; border-radius: 2px; min-height: 20px;
-            }}
+            QScrollBar:vertical {{ background: transparent; width: 3px; margin: 0; }}
+            QScrollBar::handle:vertical {{ background: {c_scroll}; border-radius: 1px; min-height: 20px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 
-            #scroll_area {{ background: transparent; }}
+            #scroll_area {{ background: transparent; border: none; }}
             #content_widget {{ background: transparent; }}
 
             #response_frame {{
                 background: {accent_bg};
-                border: none;
-                border-left: 2px solid {accent_br};
-                border-radius: 0 10px 10px 0;
+                border: 1px solid {accent_br};
+                border-left: 3px solid {accent_str};
+                border-radius: 12px;
             }}
 
             #topics_frame {{ background: transparent; }}
@@ -1880,21 +1687,22 @@ class OverlayWindow(QWidget):
             #placeholder_text {{ color: {t_place}; font-size: 10pt; font-style: italic; }}
 
             QLabel#response_text {{
-                color: {c_resp_txt}; font-size: 10pt; line-height: 1.6;
+                color: {c_resp_txt}; font-size: 10pt;
             }}
 
-            QLabel {{ color: {t_topics}; }}
+            QLabel {{ color: {t_second}; }}
 
             QSlider::groove:horizontal {{
-                height: 2px; background: {groove_bg}; border-radius: 1px;
+                height: 3px; background: {groove_bg}; border-radius: 1px;
             }}
             QSlider::handle:horizontal {{
-                width: 10px; height: 10px; margin: -4px 0;
-                background: {accent}; border-radius: 5px;
+                width: 13px; height: 13px; margin: -5px 0;
+                background: {accent}; border-radius: 6px;
             }}
 
             QTabWidget#main_tabs::pane {{
-                border: none; border-top: 1px solid {b_main};
+                border: none;
+                border-top: 1px solid {b_main};
                 background: transparent;
             }}
             QTabWidget#main_tabs > QTabBar {{
@@ -1904,20 +1712,20 @@ class OverlayWindow(QWidget):
                 background: transparent;
                 border: none;
                 border-bottom: 2px solid transparent;
-                padding: 7px 18px;
-                margin-right: 2px;
+                padding: 8px 20px;
                 color: {t_section};
                 font-size: 9pt; font-weight: 600;
             }}
             QTabWidget#main_tabs > QTabBar::tab:selected {{
-                border-bottom-color: {accent};
                 color: {accent};
+                border-bottom: 2px solid {accent};
             }}
             QTabWidget#main_tabs > QTabBar::tab:hover:!selected {{
                 color: {t_second};
-                border-bottom-color: {accent_br};
             }}
         """)
+        # Refresh mode pills to match current theme
+        self._update_mode_pills()
 
     # ── DEVICES ───────────────────────────────────────────────────────────────
 
@@ -2212,8 +2020,6 @@ class OverlayWindow(QWidget):
 
     # ── AI SUGGESTIONS ────────────────────────────────────────────────────────
     def _fetch_suggestions(self):
-        if self.mode == "transcript":
-            return  # Transcript mode: record only, no AI suggestions
         api_key = self.config.get("api_key", "")
         if not api_key:
             self._set_response_text("🔑 Add your Anthropic API key in Settings (⚙) to enable suggestions.", error=True)
@@ -2259,17 +2065,24 @@ class OverlayWindow(QWidget):
         if followups:
             self.followups_label.show()
             self.followups_frame.show()
+            d = (self._theme != "light")
+            chip_bg  = "rgba(0,199,255,0.09)"    if d else "rgba(0,122,255,0.07)"
+            chip_br  = "rgba(0,199,255,0.22)"    if d else "rgba(0,122,255,0.18)"
+            chip_c   = "#00C7FF"                 if d else "#007AFF"
+            chip_hov = "rgba(0,199,255,0.18)"    if d else "rgba(0,122,255,0.14)"
             for q in followups:
                 chip = QPushButton(q)
                 chip.setObjectName("followup_chip")
                 chip.setFont(QFont("Segoe UI", 9))
-                chip.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(99,102,241,10); border: none;
-                        border-radius: 14px; color: #818cf8;
-                        padding: 6px 14px; text-align: left;
-                    }
-                    QPushButton:hover { background: rgba(99,102,241,22); color: #a5b4fc; }
+                chip.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {chip_bg};
+                        border: 1px solid {chip_br};
+                        border-radius: 12px; color: {chip_c};
+                        padding: 5px 14px; text-align: left;
+                        font-weight: 500;
+                    }}
+                    QPushButton:hover {{ background: {chip_hov}; border-color: {chip_c}44; }}
                 """)
                 chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
                 chip.clicked.connect(lambda _, text=q: QApplication.clipboard().setText(text))
@@ -2287,61 +2100,75 @@ class OverlayWindow(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        d = (self._theme != "light")
+        resp_col    = "#F2F2F7"                    if d else "#1C1C1E"
+        think_col   = "rgba(235,235,245,0.3)"      if d else "rgba(60,60,67,0.35)"
+        err_col     = "#FF453A"                    if d else "#D70015"
+        copy_br     = "rgba(255,255,255,0.12)"     if d else "rgba(60,60,67,0.15)"
+        copy_c      = "rgba(235,235,245,0.38)"     if d else "rgba(60,60,67,0.42)"
+        copy_hov_br = "rgba(0,199,255,0.45)"       if d else "rgba(0,122,255,0.45)"
+        copy_hov_c  = "#00C7FF"                    if d else "#007AFF"
+
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setFont(QFont("Segoe UI", 10))
         if error:
-            lbl.setStyleSheet("color: #fca5a5; font-style: italic;")
+            lbl.setStyleSheet(f"color: {err_col}; font-style: italic;")
         elif thinking:
-            lbl.setStyleSheet("color: #64748b; font-style: italic;")
+            lbl.setStyleSheet(f"color: {think_col}; font-style: italic;")
         else:
-            lbl.setStyleSheet("color: #cbd5e1;")
+            lbl.setStyleSheet(f"color: {resp_col};")
             self.response_layout.addWidget(lbl)
             copy_btn = QPushButton("Copy")
             copy_btn.setFont(QFont("Segoe UI", 9))
-            copy_btn.setStyleSheet("""
-                QPushButton {
-                    background: transparent; border: none;
-                    border-radius: 8px; color: #475569; padding: 3px 10px;
-                    max-width: 60px; font-size: 8pt;
-                }
-                QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
+            copy_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    border: 1px solid {copy_br};
+                    border-radius: 10px; color: {copy_c};
+                    padding: 3px 12px; max-width: 70px; font-size: 9pt;
+                }}
+                QPushButton:hover {{ border-color: {copy_hov_br}; color: {copy_hov_c}; }}
             """)
-            def _do_copy(btn=copy_btn, t=text):
+            def _do_copy(btn=copy_btn, t=text, _br=copy_br, _c=copy_c, _hbr=copy_hov_br, _hc=copy_hov_c):
                 QApplication.clipboard().setText(t)
-                btn.setText("✓ Copied")
-                btn.setStyleSheet("""
-                    QPushButton { background: transparent; border: none;
-                    border-radius: 8px; color: #34d399; padding: 3px 10px;
-                    max-width: 70px; font-size: 8pt; }
-                """)
-                QTimer.singleShot(1500, lambda: (btn.setText("Copy"), btn.setStyleSheet("""
-                    QPushButton {
-                        background: transparent; border: none;
-                        border-radius: 8px; color: #475569; padding: 3px 10px;
-                        max-width: 60px; font-size: 8pt;
-                    }
-                    QPushButton:hover { background: rgba(255,255,255,6); color: #94a3b8; }
-                """)))
+                btn.setText("✓ Copied!")
+                btn.setStyleSheet(f"QPushButton {{ background: transparent; border: 1px solid rgba(52,199,89,0.5); border-radius: 10px; color: #34C759; padding: 3px 12px; max-width: 70px; font-size: 9pt; }}")
+                QTimer.singleShot(1500, lambda: btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent; border: 1px solid {_br};
+                        border-radius: 10px; color: {_c};
+                        padding: 3px 12px; max-width: 70px; font-size: 9pt;
+                    }}
+                    QPushButton:hover {{ border-color: {_hbr}; color: {_hc}; }}
+                """) or btn.setText("Copy"))
             copy_btn.clicked.connect(_do_copy)
             self.response_layout.addWidget(copy_btn)
             return
         self.response_layout.addWidget(lbl)
 
     def _make_topic_card(self, topic: dict):
+        d = (self._theme != "light")
+        card_bg     = "rgba(44,44,46,0.55)"       if d else "rgba(255,255,255,0.82)"
+        card_br     = "rgba(255,255,255,0.07)"    if d else "rgba(60,60,67,0.1)"
+        card_hov_bg = "rgba(58,58,60,0.75)"       if d else "rgba(255,255,255,0.96)"
+        card_hov_br = "rgba(0,199,255,0.22)"      if d else "rgba(0,122,255,0.22)"
+        title_col   = "#F2F2F7"                   if d else "#1C1C1E"
+        detail_col  = "rgba(235,235,245,0.48)"    if d else "rgba(60,60,67,0.55)"
+
         card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background: rgba(255,255,255,5);
-                border: none;
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {card_bg};
+                border: 1px solid {card_br};
                 border-radius: 10px;
-            }
-            QFrame:hover { background: rgba(255,255,255,9); }
+            }}
+            QFrame:hover {{
+                background: {card_hov_bg};
+                border-color: {card_hov_br};
+            }}
         """)
-        card.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Minimum   # shrink/grow vertically to fit content
-        )
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
@@ -2354,8 +2181,8 @@ class OverlayWindow(QWidget):
 
         title = QLabel(topic.get("title", ""))
         title.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #e2e8f0;")
-        title.setWordWrap(True)   # titles can wrap too
+        title.setStyleSheet(f"color: {title_col};")
+        title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         header_row.addWidget(icon)
@@ -2366,7 +2193,7 @@ class OverlayWindow(QWidget):
         if detail:
             detail_lbl = QLabel(detail)
             detail_lbl.setFont(QFont("Segoe UI", 9))
-            detail_lbl.setStyleSheet("color: #64748b; padding-left: 22px;")
+            detail_lbl.setStyleSheet(f"color: {detail_col}; padding-left: 22px;")
             detail_lbl.setWordWrap(True)
             detail_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             layout.addWidget(detail_lbl)
@@ -2437,86 +2264,12 @@ class OverlayWindow(QWidget):
             QTimer.singleShot(300, self._start_recording)
 
     # ── MODE ──────────────────────────────────────────────────────────────────
-    def _set_mode(self, mode_key: str):
-        self.mode = mode_key
-        self.config["mode"] = self.mode
-        save_config(self.config)
-        self._update_mode_btn()
-
-    def _open_mode_menu(self):
-        """Show a styled popup menu listing all modes."""
-        d = (self._theme != "light")
-        bg   = "#0d0e14" if d else "#f8fafc"
-        br   = "rgba(255,255,255,10)" if d else "rgba(0,0,0,8)"
-        fg   = "#94a3b8" if d else "#475569"
-        sel  = "rgba(255,255,255,7)" if d else "rgba(0,0,0,5)"
-        menu = QMenu(self)
-        menu.setStyleSheet(f"""
-            QMenu {{
-                background: {bg};
-                border: 1px solid {br};
-                border-radius: 12px;
-                padding: 6px;
-                font-family: 'Segoe UI';
-            }}
-            QMenu::item {{
-                padding: 8px 16px;
-                border-radius: 8px;
-                color: {fg};
-                font-size: 10pt;
-            }}
-            QMenu::item:selected {{
-                background: {sel};
-                color: {'#e2e8f0' if d else '#0f172a'};
-            }}
-        """)
-        for key in MODES:
-            icon  = MODE_ICONS[key]
-            label = MODE_LABELS[key]
-            desc  = MODE_DESCRIPTIONS[key]
-            c     = MODE_COLORS[key]
-            action = menu.addAction(f"{icon}  {label}  —  {desc}")
-            action.setCheckable(True)
-            action.setChecked(key == self.mode)
-            if key == self.mode:
-                action.setEnabled(False)   # visually mark active without closing
-                # Tint the active item with its mode colour via a one-off stylesheet
-                menu.setStyleSheet(menu.styleSheet() + f"""
-                    QMenu::item:!enabled {{
-                        color: {c}; background: {c}18;
-                        border-radius: 8px;
-                    }}
-                """)
-            action.triggered.connect(lambda checked, k=key: self._set_mode(k))
-        pos = self.mode_btn.mapToGlobal(
-            self.mode_btn.rect().bottomLeft() + QPoint(0, 4)
-        )
-        menu.exec(pos)
+    def _cycle_mode(self):
+        idx = MODES.index(self.mode)
+        self._set_mode(MODES[(idx + 1) % len(MODES)])
 
     def _update_mode_btn(self):
-        icon  = MODE_ICONS[self.mode]
-        label = MODE_LABELS[self.mode]
-        self.mode_btn.setText(f"{icon}  {label}  ▾")
-        c = "#00d4ff"  # always use General's cyan — consistent, clean
-        self.mode_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-size: 9pt; font-weight: 600;
-                border-radius: 12px; padding: 3px 12px;
-                border: none;
-                background: {c}20; color: {c};
-            }}
-            QPushButton:hover {{ background: {c}35; }}
-        """)
-        if not hasattr(self, "topics_frame"):
-            return  # UI not yet fully built
-        if self.mode == "transcript":
-            self._set_response_text("📝 Transcript mode — AI suggestions disabled. Recording transcript only.", thinking=True)
-            self.topics_frame.hide()
-            self.followups_frame.hide()
-            self.followups_label.hide()
-        else:
-            self.topics_frame.show()
-            self._set_response_text("Responses will appear as conversation unfolds...")
+        self._update_mode_pills()
 
     # ── SETTINGS ──────────────────────────────────────────────────────────────
     def _export_session(self):
@@ -2621,25 +2374,25 @@ class OverlayWindow(QWidget):
     def _set_opacity(self, val):
         self._opacity_val = val / 100.0
         dark = (self._theme != "light")
-        solid_bg  = "rgb(10,11,15)"        if dark else "rgb(248,250,252)"
-        border_col = "rgba(255,255,255,18)" if dark else "rgba(0,0,0,12)"
-        base_r, base_g, base_b = (10, 11, 15) if dark else (248, 250, 252)
+        solid_bg   = "rgb(28,28,30)"              if dark else "rgb(242,242,247)"
+        border_col = "rgba(255,255,255,0.09)"     if dark else "rgba(60,60,67,0.13)"
+        base_r, base_g, base_b = (28, 28, 30)    if dark else (242, 242, 247)
         if val >= 100:
             self.card.setStyleSheet(f"""
                 #card {{
                     background: {solid_bg};
                     border: 1px solid {border_col};
-                    border-radius: 16px;
+                    border-radius: 18px;
                 }}
             """)
             self.setWindowOpacity(1.0)
         else:
-            alpha = int(235 * (val / 100))
+            alpha = int(245 * (val / 100))
             self.card.setStyleSheet(f"""
                 #card {{
                     background: rgba({base_r},{base_g},{base_b},{alpha});
                     border: 1px solid {border_col};
-                    border-radius: 16px;
+                    border-radius: 18px;
                 }}
             """)
             self.setWindowOpacity(max(0.2, val / 100.0))
@@ -2728,11 +2481,7 @@ if __name__ == "__main__":
     app.setApplicationName("PandAI Assistant")
     app.setQuitOnLastWindowClosed(True)
 
-    panda_icon = _make_panda_icon()
-    app.setWindowIcon(panda_icon)
-
     window = OverlayWindow()
-    window.setWindowIcon(panda_icon)
     window.show()
     window._apply_stealth_mode(window.config.get("stealth_mode", False))
     sys.exit(app.exec())
