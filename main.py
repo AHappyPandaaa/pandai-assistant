@@ -55,46 +55,28 @@ STEP_SECONDS   = 3     # step forward every N seconds (balance speed vs repetiti
 WHISPER_MODEL  = "medium"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
-CONFIG_FILE  = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
-HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".pandai_history.json")
+CONFIG_FILE   = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
+SESSIONS_FILE = os.path.join(os.path.expanduser("~"), ".pandai_sessions.json")
 
-MODES = ["general", "interview", "technical", "sales", "casual"]
-MODE_LABELS = {
-    "general":   "General",
-    "interview": "Interview",
-    "technical": "Technical",
-    "sales":     "Client Call",
-    "casual":    "Casual",
-}
-MODE_COLORS = {
-    "general":   "#00d4ff",
-    "interview": "#10b981",
-    "technical": "#f59e0b",
-    "sales":     "#a78bfa",
-    "casual":    "#f97316",
-}
-SYSTEM_PROMPTS = {
-    "general": (
-        "You are a real-time conversation assistant. Analyze the transcript and respond ONLY in JSON:\n"
-        '{"response":"2-3 sentence suggested reply","topics":[{"icon":"...","title":"...","detail":"..."}],"followups":["...","..."]}'
-    ),
-    "interview": (
-        "You help in job interviews. Give a concise STAR-format answer suggestion. Respond ONLY in JSON:\n"
-        '{"response":"STAR answer","topics":[{"icon":"⭐","title":"competency","detail":"example"}],"followups":["question to ask interviewer"]}'
-    ),
-    "technical": (
-        "You assist in technical discussions. Respond ONLY in JSON:\n"
-        '{"response":"precise technical response","topics":[{"icon":"⚙️","title":"concept","detail":"explanation"}],"followups":["follow-up question"]}'
-    ),
-    "sales": (
-        "You assist in client/sales calls. Respond ONLY in JSON:\n"
-        '{"response":"value-focused response","topics":[{"icon":"💼","title":"talking point","detail":"detail"}],"followups":["discovery question"]}'
-    ),
-    "casual": (
-        "You help in casual conversation. Respond ONLY in JSON:\n"
-        '{"response":"natural reply","topics":[{"icon":"💬","title":"topic","detail":"detail"}],"followups":["follow-up question"]}'
-    ),
-}
+ANALYSIS_SYSTEM_PROMPT = (
+    "You are a real-time conversation intelligence assistant. "
+    "The user has selected a piece of transcript to analyze.\n"
+    "Provide:\n"
+    "1. A concise depth analysis (2-4 sentences) of what is being discussed\n"
+    "2. Connected topics — 2-4 adjacent concepts or ideas that relate to this, "
+    "even if not explicitly mentioned in the conversation\n"
+    "3. 2-3 smart follow-up questions the user could raise to go deeper\n\n"
+    "Respond ONLY in JSON:\n"
+    '{"analysis":"...","connected":[{"icon":"...","title":"...","detail":"..."}],"followups":["..."]}'
+)
+
+HIGHLIGHT_SYSTEM_PROMPT = (
+    "Extract the 3-8 most important, substantive phrases from this conversation transcript. "
+    "Focus on specific topics, technical terms, names, decisions, or key concepts. "
+    "Ignore small talk, filler words, and simple greetings. "
+    "Return ONLY a JSON array of short phrase strings (2-6 words each), "
+    'e.g.: ["API rate limiting", "pricing model", "Q3 deadline"]'
+)
 
 # ── CONFIG PERSISTENCE ───────────────────────────────────────────────────────
 def load_config():
@@ -113,19 +95,19 @@ def save_config(cfg):
     except Exception:
         pass
 
-def load_history():
+def load_sessions():
     try:
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f:
+        if os.path.exists(SESSIONS_FILE):
+            with open(SESSIONS_FILE) as f:
                 return json.load(f)
     except Exception:
         pass
     return []
 
-def save_history(entries):
+def save_sessions(sessions):
     try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(entries[-100:], f, indent=2)
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(sessions[-50:], f, indent=2)
     except Exception:
         pass
 
@@ -473,40 +455,103 @@ class TranscribeWorker(QThread):
         except Exception as e:
             print(f"Transcription error: {e}")
 
-# ── CLAUDE WORKER ─────────────────────────────────────────────────────────────
-class ClaudeWorker(QThread):
+# ── CLAUDE ANALYSIS WORKER ────────────────────────────────────────────────────
+class ClaudeAnalysisWorker(QThread):
+    """On-demand deep analysis of a user-selected transcript excerpt."""
     result = pyqtSignal(dict)
     error  = pyqtSignal(str)
 
-    def __init__(self, api_key, mode, transcript, briefing="", custom_prompts=None):
+    def __init__(self, api_key, selection, context, briefing=""):
         super().__init__()
-        self.api_key        = api_key
-        self.mode           = mode
-        self.transcript     = transcript
-        self.briefing       = briefing
-        self.custom_prompts = custom_prompts or {}
+        self.api_key   = api_key
+        self.selection = selection
+        self.context   = context
+        self.briefing  = briefing
 
     def run(self):
         try:
             client = anthropic.Anthropic(api_key=self.api_key)
-            system = self.custom_prompts.get(self.mode) or SYSTEM_PROMPTS.get(self.mode, SYSTEM_PROMPTS["general"])
-            context = self.transcript[-800:]
+            user_content = (
+                f'Selected text:\n"{self.selection}"\n\n'
+                f'Full conversation context:\n"{self.context[-1500:]}"'
+            )
             if self.briefing:
-                context = f"Session context:\n{self.briefing}\n\nTranscript:\n{context}"
+                user_content = f"Session context: {self.briefing}\n\n{user_content}"
             msg = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=800,
-                system=system,
-                messages=[{"role": "user", "content": f'Transcript:\n"{context}"'}],
+                system=ANALYSIS_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
             )
             raw = msg.content[0].text.strip()
             raw = raw.replace("```json", "").replace("```", "").strip()
             data = json.loads(raw)
             self.result.emit(data)
         except json.JSONDecodeError:
-            self.error.emit("Claude returned unexpected format — retrying next chunk.")
+            self.error.emit("Unexpected response format — please try again.")
         except Exception as e:
             self.error.emit(str(e))
+
+
+# ── HIGHLIGHT WORKER ──────────────────────────────────────────────────────────
+class HighlightWorker(QThread):
+    """Background pass every ~12s — extracts key phrases to highlight in transcript."""
+    phrases_ready = pyqtSignal(list)
+
+    def __init__(self, api_key, transcript):
+        super().__init__()
+        self.api_key    = api_key
+        self.transcript = transcript
+
+    def run(self):
+        if not self.api_key or len(self.transcript.strip().split()) < 15:
+            return
+        try:
+            client = anthropic.Anthropic(api_key=self.api_key)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                system=HIGHLIGHT_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": f'Transcript:\n"{self.transcript[-1000:]}"'}],
+            )
+            raw = msg.content[0].text.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            phrases = json.loads(raw)
+            if isinstance(phrases, list):
+                self.phrases_ready.emit([p for p in phrases if isinstance(p, str)])
+        except Exception:
+            pass  # highlights are best-effort, never block the UI
+
+
+# ── SESSION TITLE WORKER ──────────────────────────────────────────────────────
+class SessionTitleWorker(QThread):
+    """Generates a short auto-title for a completed session."""
+    title_ready = pyqtSignal(str)
+
+    def __init__(self, api_key, transcript, briefing=""):
+        super().__init__()
+        self.api_key    = api_key
+        self.transcript = transcript
+        self.briefing   = briefing
+
+    def run(self):
+        if not self.api_key or len(self.transcript.strip().split()) < 10:
+            return
+        try:
+            client = anthropic.Anthropic(api_key=self.api_key)
+            ctx = (f"Briefing: {self.briefing}\n" if self.briefing else "")
+            ctx += f"Transcript excerpt:\n{self.transcript[:600]}"
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=30,
+                system="Generate a short (4-7 word) title for this conversation session. Return ONLY the title, no quotes or punctuation.",
+                messages=[{"role": "user", "content": ctx}],
+            )
+            title = msg.content[0].text.strip().strip('"\'')
+            if title:
+                self.title_ready.emit(title)
+        except Exception:
+            pass
 
 # ── SETTINGS DIALOG ───────────────────────────────────────────────────────────
 from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QGridLayout, QGroupBox, QScrollArea as _QScrollArea
@@ -758,34 +803,6 @@ class SettingsDialog(QDialog):
         sens_layout.addWidget(sens_hint)
         layout.addWidget(sens_group)
 
-        # Custom system prompts per mode
-        prompt_group = QGroupBox("Mode System Prompts (optional override)")
-        prompt_layout = QVBoxLayout(prompt_group)
-        prompt_hint = QLabel("Leave blank to use the built-in prompt for each mode.")
-        prompt_hint.setStyleSheet("color: #475569; font-size: 9pt;")
-        prompt_layout.addWidget(prompt_hint)
-        prompt_mode_row = QHBoxLayout()
-        prompt_mode_row.addWidget(QLabel("Mode:"))
-        self.prompt_mode_combo = QComboBox()
-        for key, label in MODE_LABELS.items():
-            self.prompt_mode_combo.addItem(label, key)
-        prompt_mode_row.addWidget(self.prompt_mode_combo, 1)
-        prompt_layout.addLayout(prompt_mode_row)
-        self._custom_prompts = dict(self.config.get("custom_prompts", {}))
-        self.prompt_edit = QTextEdit()
-        self.prompt_edit.setFixedHeight(80)
-        self.prompt_edit.setPlaceholderText("Custom system prompt (leave blank to use default)…")
-        self.prompt_edit.setStyleSheet("")  # inherits from dialog stylesheet
-        self._load_prompt_for_mode(self.prompt_mode_combo.currentData())
-        self.prompt_mode_combo.currentIndexChanged.connect(
-            lambda: self._switch_prompt_mode()
-        )
-        self.prompt_edit.textChanged.connect(
-            lambda: self._custom_prompts.update({self.prompt_mode_combo.currentData(): self.prompt_edit.toPlainText()})
-        )
-        prompt_layout.addWidget(self.prompt_edit)
-        layout.addWidget(prompt_group)
-
         # Appearance
         appear_group = QGroupBox("Appearance")
         appear_layout = QHBoxLayout(appear_group)
@@ -874,16 +891,6 @@ class SettingsDialog(QDialog):
         text.setPlainText(_fetch())
         dlg.exec()
 
-    def _load_prompt_for_mode(self, mode_key):
-        self.prompt_edit.blockSignals(True)
-        self.prompt_edit.setPlainText(self._custom_prompts.get(mode_key, ""))
-        self.prompt_edit.blockSignals(False)
-
-    def _switch_prompt_mode(self):
-        # Save current edit before switching
-        self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
-        self._load_prompt_for_mode(self.prompt_mode_combo.currentData())
-
     def _save(self):
         self.config["api_key"]                   = self.api_input.text().strip()
         self.config["mic_device"]                = self.mic_combo.currentData()
@@ -892,10 +899,7 @@ class SettingsDialog(QDialog):
         self.config["hotkey"]                    = self.hotkey_input.text().strip() or "ctrl+shift+space"
         self.config["stealth_mode"]              = self.stealth_check.isChecked()
         self.config["transcription_sensitivity"] = self.sens_slider.value()
-        # Save custom prompts, stripping empty entries
-        self._custom_prompts[self.prompt_mode_combo.currentData()] = self.prompt_edit.toPlainText()
-        self.config["custom_prompts"] = {k: v for k, v in self._custom_prompts.items() if v.strip()}
-        self.config["theme"]          = self.theme_combo.currentData()
+        self.config["theme"]                     = self.theme_combo.currentData()
         self.accept()
 
     def get_config(self):
@@ -906,22 +910,26 @@ class OverlayWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.config       = load_config()
-        self.mode         = self.config.get("mode", "general")
         self.whisper      = None
         self.capture      = None
         self.transcribe_q = []   # pending TranscribeWorker refs
-        self.claude_q     = []   # pending ClaudeWorker refs
+        self.claude_q     = []   # pending ClaudeAnalysisWorker refs
         self.full_transcript = ""
-        self._last_suggestion_data = None
         self._drag_pos    = None
-        self._export_entries = []   # list of suggestion dicts for session export
-        self._saved_history  = load_history()  # persisted across sessions
-        self._paused = False
-        self._briefing = ""           # pre-session context fed to Claude
-        self._display_transcript = "" # labelled transcript for the UI box
+        self._paused      = False
+        self._briefing    = ""           # pre-session context
+        self._display_transcript = ""    # labelled transcript for the UI box
         # Per-source dedup state for speaker labels
         self._last_words_mic = []
         self._last_words_sys = []
+        # Selection & analysis
+        self._current_selection      = ""     # text user has selected
+        self._pending_display_update = False  # freeze transcript updates during selection
+        self._highlight_phrases      = set()  # currently highlighted phrases
+        # Session tracking
+        self._current_session  = None   # dict for the in-progress session
+        self._session_start    = None   # datetime when recording started
+        self._analyses         = []     # analysis entries for current session
         self._hotkey_signaler = _HotkeySignaler()
         self._hotkey_signaler.triggered.connect(
             self._toggle_visibility, Qt.ConnectionType.QueuedConnection
@@ -934,7 +942,7 @@ class OverlayWindow(QWidget):
 
         self._setup_window()
         self._build_ui()
-        self._load_saved_history()
+        self._load_sessions_into_tab()
         self._apply_styles()
         self._set_opacity(int(self._opacity_val * 100))
         self._load_whisper()
@@ -1012,8 +1020,6 @@ class OverlayWindow(QWidget):
         hl.addWidget(hide_btn)
         card_layout.addWidget(header)
 
-        # ── Mode pill bar
-        card_layout.addWidget(self._build_mode_bar())
 
         # ── Controls bar
         ctrl = QFrame()
@@ -1113,12 +1119,25 @@ class OverlayWindow(QWidget):
         tl = QVBoxLayout(t_frame)
         tl.setContentsMargins(12, 8, 12, 6)
         tl.setSpacing(4)
-        tl.addWidget(self._section_label("LIVE TRANSCRIPT"))
+
+        t_header_row = QHBoxLayout()
+        t_header_row.addWidget(self._section_label("TRANSCRIPT"))
+        t_header_row.addStretch()
+        self.analyze_btn = QPushButton("🔍  Analyze Selection")
+        self.analyze_btn.setObjectName("analyze_btn")
+        self.analyze_btn.setFixedHeight(26)
+        self.analyze_btn.hide()
+        self.analyze_btn.clicked.connect(self._analyze_selection)
+        t_header_row.addWidget(self.analyze_btn)
+        tl.addLayout(t_header_row)
+
         self.transcript_box = QTextEdit()
         self.transcript_box.setObjectName("transcript_box")
         self.transcript_box.setReadOnly(True)
-        self.transcript_box.setFixedHeight(80)
-        self.transcript_box.setPlaceholderText("Press Start Listening to begin...")
+        self.transcript_box.setMinimumHeight(180)
+        self.transcript_box.setMaximumHeight(280)
+        self.transcript_box.setPlaceholderText("Press Start Listening to begin…\n\nSelect any text in the transcript to analyze it.")
+        self.transcript_box.selectionChanged.connect(self._on_selection_changed)
         tl.addWidget(self.transcript_box)
         card_layout.addWidget(t_frame)
 
@@ -1133,19 +1152,19 @@ class OverlayWindow(QWidget):
         self.content_layout.setContentsMargins(12, 6, 12, 12)
         self.content_layout.setSpacing(10)
 
-        # Response section
-        self.content_layout.addWidget(self._section_label("SUGGESTED RESPONSE"))
+        # Analysis section
+        self.content_layout.addWidget(self._section_label("ANALYSIS"))
         self.response_frame = QFrame()
         self.response_frame.setObjectName("response_frame")
         self.response_layout = QVBoxLayout(self.response_frame)
         self.response_layout.setContentsMargins(10, 8, 10, 8)
-        self.response_label = QLabel("Responses will appear as conversation unfolds...")
+        self.response_label = QLabel("Select text in the transcript above, then tap Analyze to go deep on any topic…")
         self.response_label.setObjectName("placeholder_text")
         self.response_label.setWordWrap(True)
         self.response_layout.addWidget(self.response_label)
         self.content_layout.addWidget(self.response_frame)
 
-        # Topics section
+        # Connected topics section
         self.content_layout.addWidget(self._section_label("CONNECTED TOPICS"))
         self.topics_frame = QFrame()
         self.topics_frame.setObjectName("topics_frame")
@@ -1178,29 +1197,29 @@ class OverlayWindow(QWidget):
         live_scroll.setWidget(live_widget)
         self.tabs.addTab(live_scroll, "💬  Live")
 
-        # ── TAB 2: History ───────────────────────────────────────────────────
-        history_outer = QWidget()
-        history_outer.setObjectName("content_widget")
-        history_outer_layout = QVBoxLayout(history_outer)
-        history_outer_layout.setContentsMargins(0, 0, 0, 0)
+        # ── TAB 2: Sessions ──────────────────────────────────────────────────
+        sessions_outer = QWidget()
+        sessions_outer.setObjectName("content_widget")
+        sessions_outer_layout = QVBoxLayout(sessions_outer)
+        sessions_outer_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.history_scroll = QScrollArea()
-        self.history_scroll.setObjectName("scroll_area")
-        self.history_scroll.setWidgetResizable(True)
-        self.history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.history_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.sessions_scroll = QScrollArea()
+        self.sessions_scroll.setObjectName("scroll_area")
+        self.sessions_scroll.setWidgetResizable(True)
+        self.sessions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sessions_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        self.history_widget = QWidget()
-        self.history_widget.setObjectName("content_widget")
-        self.history_layout = QVBoxLayout(self.history_widget)
-        self.history_layout.setContentsMargins(12, 8, 12, 12)
-        self.history_layout.setSpacing(8)
-        self.history_layout.addWidget(self._make_history_placeholder())
-        self.history_layout.addStretch()
+        self.sessions_widget = QWidget()
+        self.sessions_widget.setObjectName("content_widget")
+        self.sessions_layout = QVBoxLayout(self.sessions_widget)
+        self.sessions_layout.setContentsMargins(12, 8, 12, 12)
+        self.sessions_layout.setSpacing(8)
+        self.sessions_layout.addWidget(self._make_sessions_placeholder())
+        self.sessions_layout.addStretch()
 
-        self.history_scroll.setWidget(self.history_widget)
-        history_outer_layout.addWidget(self.history_scroll)
-        self.tabs.addTab(history_outer, "🕘  History")
+        self.sessions_scroll.setWidget(self.sessions_widget)
+        sessions_outer_layout.addWidget(self.sessions_scroll)
+        self.tabs.addTab(sessions_outer, "📁  Sessions")
 
         card_layout.addWidget(self.tabs, 1)
 
@@ -1218,8 +1237,236 @@ class OverlayWindow(QWidget):
         lbl.setObjectName("section_label")
         return lbl
 
-    def _make_history_placeholder(self):
-        lbl = QLabel("Previous suggestions will appear here as the conversation progresses...")
+    def _load_saved_history(self):
+        pass  # replaced by _load_sessions_into_tab
+
+    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
+        pass  # replaced by session-based persistence
+
+
+    # ── SELECTION & ON-DEMAND ANALYSIS ───────────────────────────────────────
+    def _on_selection_changed(self):
+        sel = self.transcript_box.textCursor().selectedText().strip()
+        if sel:
+            self._current_selection = sel
+            preview = sel[:40] + ("…" if len(sel) > 40 else "")
+            self.analyze_btn.setText(f"🔍  Analyze  \"{preview}\"")
+            self.analyze_btn.show()
+            self._pending_display_update = True  # freeze transcript refresh
+        else:
+            self._current_selection = ""
+            self.analyze_btn.hide()
+            if self._pending_display_update:
+                self._pending_display_update = False
+                self._flush_transcript_display()
+
+    def _analyze_selection(self):
+        api_key = self.config.get("api_key", "")
+        if not api_key:
+            self._set_response_text("🔑 Add your Anthropic API key in Settings to enable analysis.", error=True)
+            return
+        if not self._current_selection:
+            return
+
+        selection = self._current_selection
+        self._current_selection = ""
+        self.analyze_btn.hide()
+        self._pending_display_update = False
+
+        self.tabs.setCurrentIndex(0)  # switch to Analysis tab
+
+        worker = ClaudeAnalysisWorker(
+            api_key, selection, self.full_transcript, briefing=self._briefing
+        )
+        worker.result.connect(lambda d: self._render_analysis(d, selection))
+        worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
+        self.claude_q.append(worker)
+        worker.finished.connect(lambda: self.claude_q.remove(worker) if worker in self.claude_q else None)
+        preview = selection[:50] + ("…" if len(selection) > 50 else "")
+        self._set_response_text(f"Analyzing \"{preview}\"…", thinking=True)
+        worker.start()
+
+    def _render_analysis(self, data: dict, selection: str):
+        import datetime
+        analysis_entry = {
+            "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+            "selection": selection,
+            "analysis":  data.get("analysis", ""),
+            "connected": data.get("connected", []),
+            "followups": data.get("followups", []),
+        }
+        self._analyses.append(analysis_entry)
+
+        self._set_response_text(data.get("analysis", ""))
+
+        # Connected topics
+        while self.topics_layout.count():
+            item = self.topics_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        for t in data.get("connected", []):
+            self.topics_layout.addWidget(self._make_topic_card(t))
+
+        # Follow-up questions
+        while self.followups_layout.count():
+            item = self.followups_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        followups = data.get("followups", [])
+        if followups:
+            self.followups_label.show()
+            self.followups_frame.show()
+            d = (self._theme != "light")
+            chip_bg  = "rgba(0,199,255,0.09)"  if d else "rgba(0,122,255,0.07)"
+            chip_br  = "rgba(0,199,255,0.22)"  if d else "rgba(0,122,255,0.18)"
+            chip_c   = "#00C7FF"               if d else "#007AFF"
+            chip_hov = "rgba(0,199,255,0.18)"  if d else "rgba(0,122,255,0.14)"
+            for q in followups:
+                chip = QPushButton(q)
+                chip.setObjectName("followup_chip")
+                chip.setFont(QFont("Segoe UI", 9))
+                chip.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {chip_bg}; border: 1px solid {chip_br};
+                        border-radius: 12px; color: {chip_c};
+                        padding: 5px 14px; text-align: left; font-weight: 500;
+                    }}
+                    QPushButton:hover {{ background: {chip_hov}; border-color: {chip_c}44; }}
+                """)
+                chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                chip.clicked.connect(lambda _, t=q: QApplication.clipboard().setText(t))
+                chip.setToolTip("Click to copy")
+                chip.setMaximumWidth(400)
+                self.followups_layout.addWidget(chip)
+        else:
+            self.followups_label.hide()
+            self.followups_frame.hide()
+
+    # ── HIGHLIGHT ENGINE ──────────────────────────────────────────────────────
+    def _schedule_highlight_pass(self):
+        if not hasattr(self, '_highlight_pass_timer'):
+            self._highlight_pass_timer = QTimer()
+            self._highlight_pass_timer.timeout.connect(self._run_highlight_pass)
+        if not self._highlight_pass_timer.isActive():
+            self._highlight_pass_timer.start(12000)  # every 12s
+
+    def _stop_highlight_timer(self):
+        if hasattr(self, '_highlight_pass_timer'):
+            self._highlight_pass_timer.stop()
+
+    def _run_highlight_pass(self):
+        api_key = self.config.get("api_key", "")
+        if not api_key or not self.full_transcript.strip():
+            return
+        worker = HighlightWorker(api_key, self.full_transcript)
+        worker.phrases_ready.connect(self._apply_highlights)
+        worker.start()
+
+    def _apply_highlights(self, phrases: list):
+        """Highlight key phrases without disturbing any active selection."""
+        self._highlight_phrases = set(phrases)
+        if self._pending_display_update:
+            return
+
+        from PyQt6.QtGui import QTextCharFormat, QTextCursor as _TC
+        doc = self.transcript_box.document()
+        saved_cursor = self.transcript_box.textCursor()
+        saved_anchor = saved_cursor.anchor()
+        saved_pos    = saved_cursor.position()
+
+        # Clear existing highlights
+        full_c = _TC(doc)
+        full_c.select(_TC.SelectionType.Document)
+        clear_fmt = QTextCharFormat()
+        clear_fmt.setBackground(QColor(0, 0, 0, 0))
+        full_c.mergeCharFormat(clear_fmt)
+
+        # Apply new highlights
+        d = (self._theme != "light")
+        hl_fmt = QTextCharFormat()
+        hl_fmt.setBackground(QColor(0, 199, 255, 38) if d else QColor(0, 122, 255, 28))
+
+        text = self.transcript_box.toPlainText()
+        for phrase in phrases:
+            start = 0
+            while True:
+                idx = text.lower().find(phrase.lower(), start)
+                if idx == -1:
+                    break
+                c = _TC(doc)
+                c.setPosition(idx)
+                c.setPosition(idx + len(phrase), _TC.MoveMode.KeepAnchor)
+                c.mergeCharFormat(hl_fmt)
+                start = idx + 1
+
+        # Restore selection
+        restored = self.transcript_box.textCursor()
+        restored.setPosition(saved_anchor)
+        restored.setPosition(saved_pos, _TC.MoveMode.KeepAnchor)
+        self.transcript_box.setTextCursor(restored)
+
+    def _flush_transcript_display(self):
+        """Apply any buffered transcript update after user clears selection."""
+        self.transcript_box.setPlainText(self._display_transcript.strip()[-2000:])
+        cursor = self.transcript_box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.transcript_box.setTextCursor(cursor)
+        if self._highlight_phrases:
+            self._apply_highlights(list(self._highlight_phrases))
+
+    # ── SESSION LIFECYCLE ─────────────────────────────────────────────────────
+    def _start_session(self):
+        import datetime, uuid
+        self._session_start = datetime.datetime.now()
+        self._analyses = []
+        self._highlight_phrases = set()
+        self._current_session = {
+            "id":               str(uuid.uuid4()),
+            "title":            self._session_start.strftime("Session %b %d, %Y  %H:%M"),
+            "date":             self._session_start.isoformat(),
+            "duration_seconds": 0,
+            "briefing":         self._briefing,
+            "transcript":       "",
+            "analyses":         [],
+        }
+
+    def _end_session(self):
+        if not self._current_session:
+            return
+        import datetime
+        duration = int((datetime.datetime.now() - self._session_start).total_seconds()) if self._session_start else 0
+        self._current_session.update({
+            "duration_seconds": duration,
+            "transcript":       self._display_transcript.strip(),
+            "analyses":         self._analyses,
+        })
+        self._stop_highlight_timer()
+        if self._display_transcript.strip():
+            sessions = load_sessions()
+            sessions.append(self._current_session)
+            save_sessions(sessions)
+            self._load_sessions_into_tab()
+            # Auto-title in background
+            api_key = self.config.get("api_key", "")
+            if api_key:
+                sid = self._current_session["id"]
+                tw = SessionTitleWorker(api_key, self.full_transcript, self._briefing)
+                tw.title_ready.connect(lambda t: self._update_session_title(sid, t))
+                tw.start()
+        self._current_session = None
+        self._session_start   = None
+
+    def _update_session_title(self, session_id: str, title: str):
+        sessions = load_sessions()
+        for s in sessions:
+            if s.get("id") == session_id:
+                s["title"] = title
+                break
+        save_sessions(sessions)
+        self._load_sessions_into_tab()
+
+    # ── SESSIONS TAB ──────────────────────────────────────────────────────────
+    def _make_sessions_placeholder(self):
+        lbl = QLabel("Completed sessions will appear here.\n\nStart and stop a recording to save a session.")
         lbl.setObjectName("placeholder_text")
         lbl.setFont(QFont("Segoe UI", 10))
         lbl.setWordWrap(True)
@@ -1227,235 +1474,135 @@ class OverlayWindow(QWidget):
         lbl.setContentsMargins(12, 24, 12, 24)
         return lbl
 
-    def _load_saved_history(self):
-        """Populate history tab with entries persisted from previous sessions."""
-        if not self._saved_history:
+    def _load_sessions_into_tab(self):
+        while self.sessions_layout.count():
+            item = self.sessions_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        sessions = load_sessions()
+        if not sessions:
+            self.sessions_layout.addWidget(self._make_sessions_placeholder())
+            self.sessions_layout.addStretch()
             return
-        # Show a divider so users know these are past sessions
-        divider = QLabel("— Previous Sessions —")
-        divider.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        divider.setStyleSheet("color: #475569; font-size: 8pt; padding: 4px 0;")
-        insert_pos = max(0, self.history_layout.count() - 1)
-        self.history_layout.insertWidget(insert_pos, divider)
-        # Remove placeholder if present
-        if self.history_layout.count() > 0:
-            first = self.history_layout.itemAt(0).widget()
-            if first and first.objectName() == "placeholder_text":
-                self.history_layout.removeWidget(first)
-                first.deleteLater()
-        for entry in self._saved_history[-20:]:
-            data = {
-                "response":  entry.get("response", ""),
-                "topics":    entry.get("topics", []),
-                "followups": entry.get("followups", []),
-            }
-            self._add_history_entry(data, entry.get("snippet", ""),
-                                    time_str=entry.get("time", ""), persist=False)
+        for session in reversed(sessions[-30:]):
+            self.sessions_layout.addWidget(self._make_session_card(session))
+        self.sessions_layout.addStretch()
 
-    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
-        """Add a collapsed history card for a past suggestion."""
+    def _make_session_card(self, session: dict):
         import datetime
-        entry = {
-            "time": time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "snippet": snippet,
-            "response": data.get("response", ""),
-            "topics": data.get("topics", []),
-            "followups": data.get("followups", []),
-        }
-        self._export_entries.append(entry)
-        if persist:
-            self._saved_history.append(entry)
-            save_history(self._saved_history)
-        # Remove placeholder if present
-        if self.history_layout.count() > 0:
-            first = self.history_layout.itemAt(0).widget()
-            if first and first.objectName() == "placeholder_text":
-                self.history_layout.removeWidget(first)
-                first.deleteLater()
-
-        # Build card
         d = (self._theme != "light")
-        h_card_bg    = "rgba(44,44,46,0.5)"       if d else "rgba(255,255,255,0.78)"
-        h_card_br    = "rgba(255,255,255,0.06)"   if d else "rgba(60,60,67,0.09)"
-        h_card_hbg   = "rgba(58,58,60,0.7)"       if d else "rgba(255,255,255,0.96)"
-        h_card_hbr   = "rgba(0,199,255,0.18)"     if d else "rgba(0,122,255,0.18)"
-        h_snip_col   = "rgba(235,235,245,0.32)"   if d else "rgba(60,60,67,0.38)"
-        h_tog_bg     = "rgba(255,255,255,0.07)"   if d else "rgba(0,0,0,0.05)"
-        h_tog_br     = "rgba(255,255,255,0.1)"    if d else "rgba(60,60,67,0.13)"
-        h_tog_c      = "rgba(235,235,245,0.4)"    if d else "rgba(60,60,67,0.45)"
-        h_tog_hc     = "#00C7FF"                  if d else "#007AFF"
-        h_tog_hbr    = "rgba(0,199,255,0.3)"      if d else "rgba(0,122,255,0.3)"
-        h_resp_col   = "rgba(235,235,245,0.82)"   if d else "#1C1C1E"
-        h_copy_br    = "rgba(255,255,255,0.1)"    if d else "rgba(60,60,67,0.13)"
-        h_copy_c     = "rgba(235,235,245,0.38)"   if d else "rgba(60,60,67,0.42)"
+        card_bg  = "rgba(44,44,46,0.5)"      if d else "rgba(255,255,255,0.78)"
+        card_br  = "rgba(255,255,255,0.06)"  if d else "rgba(60,60,67,0.09)"
+        card_hbg = "rgba(58,58,60,0.7)"      if d else "rgba(255,255,255,0.96)"
+        card_hbr = "rgba(0,199,255,0.18)"    if d else "rgba(0,122,255,0.18)"
+        title_c  = "#F2F2F7"                 if d else "#1C1C1E"
+        meta_c   = "rgba(235,235,245,0.38)"  if d else "rgba(60,60,67,0.45)"
+        tog_bg   = "rgba(255,255,255,0.07)"  if d else "rgba(0,0,0,0.05)"
+        tog_br   = "rgba(255,255,255,0.1)"   if d else "rgba(60,60,67,0.13)"
+        tog_c    = "rgba(235,235,245,0.4)"   if d else "rgba(60,60,67,0.45)"
+        tog_hc   = "#00C7FF"                 if d else "#007AFF"
+        tog_hbr  = "rgba(0,199,255,0.3)"     if d else "rgba(0,122,255,0.3)"
+        resp_c   = "rgba(235,235,245,0.82)"  if d else "#1C1C1E"
+        t_bg     = "rgba(44,44,46,0.5)"      if d else "rgba(255,255,255,0.7)"
 
         card = QFrame()
+        card.setObjectName("session_card")
         card.setStyleSheet(f"""
-            QFrame#history_card {{
-                background: {h_card_bg};
-                border: 1px solid {h_card_br};
-                border-radius: 10px;
+            QFrame#session_card {{
+                background: {card_bg}; border: 1px solid {card_br}; border-radius: 10px;
             }}
-            QFrame#history_card:hover {{
-                background: {h_card_hbg};
-                border-color: {h_card_hbr};
-            }}
+            QFrame#session_card:hover {{ background: {card_hbg}; border-color: {card_hbr}; }}
         """)
-        card.setObjectName("history_card")
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 8, 10, 8)
-        card_layout.setSpacing(4)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(12, 10, 12, 10)
+        cl.setSpacing(4)
 
-        # Header row: snippet + expand toggle
-        header_row = QHBoxLayout()
-        snippet_lbl = QLabel(snippet[:80] + ("…" if len(snippet) > 80 else ""))
-        snippet_lbl.setFont(QFont("Segoe UI", 9))
-        snippet_lbl.setStyleSheet(f"color: {h_snip_col}; font-style: italic;")
-        snippet_lbl.setWordWrap(False)
+        hrow = QHBoxLayout()
+        title_lbl = QLabel(session.get("title", "Untitled Session"))
+        title_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+        title_lbl.setStyleSheet(f"color: {title_c};")
+        try:
+            dt = datetime.datetime.fromisoformat(session.get("date", ""))
+            date_str = dt.strftime("%b %d, %Y  %H:%M")
+        except Exception:
+            date_str = session.get("date", "")[:16]
+        dur_s = session.get("duration_seconds", 0)
+        dur_str = f"{dur_s//60}m {dur_s%60}s" if dur_s >= 60 else f"{dur_s}s"
+        n = len(session.get("analyses", []))
+        meta_lbl = QLabel(f"{date_str}  ·  {dur_str}  ·  {n} analysis{'es' if n != 1 else ''}")
+        meta_lbl.setFont(QFont("Segoe UI", 8))
+        meta_lbl.setStyleSheet(f"color: {meta_c};")
 
-        toggle_btn = QPushButton("▾ Show")
+        toggle_btn = QPushButton("▾ Expand")
         toggle_btn.setFont(QFont("Segoe UI", 8))
+        toggle_btn.setFixedWidth(75)
         toggle_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {h_tog_bg};
-                border: 1px solid {h_tog_br};
-                border-radius: 6px;
-                color: {h_tog_c};
-                padding: 2px 8px;
+                background: {tog_bg}; border: 1px solid {tog_br};
+                border-radius: 6px; color: {tog_c}; padding: 2px 8px;
             }}
-            QPushButton:hover {{ color: {h_tog_hc}; border-color: {h_tog_hbr}; }}
+            QPushButton:hover {{ color: {tog_hc}; border-color: {tog_hbr}; }}
         """)
-        toggle_btn.setFixedWidth(65)
-        header_row.addWidget(snippet_lbl, 1)
-        header_row.addWidget(toggle_btn)
-        card_layout.addLayout(header_row)
+        hrow.addWidget(title_lbl, 1)
+        hrow.addWidget(toggle_btn)
+        cl.addLayout(hrow)
+        cl.addWidget(meta_lbl)
 
-        # Collapsible detail area
-        detail_widget = QWidget()
-        detail_widget.setVisible(False)
-        detail_layout = QVBoxLayout(detail_widget)
-        detail_layout.setContentsMargins(0, 6, 0, 0)
-        detail_layout.setSpacing(6)
+        # Collapsible detail
+        detail = QWidget()
+        detail.setVisible(False)
+        dl = QVBoxLayout(detail)
+        dl.setContentsMargins(0, 8, 0, 0)
+        dl.setSpacing(8)
 
-        # Response
-        resp_lbl = QLabel(data.get("response", ""))
-        resp_lbl.setFont(QFont("Segoe UI", 10))
-        resp_lbl.setStyleSheet(f"color: {h_resp_col};")
-        resp_lbl.setWordWrap(True)
-        resp_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        transcript = session.get("transcript", "").strip()
+        if transcript:
+            tl = self._section_label("TRANSCRIPT")
+            dl.addWidget(tl)
+            t_box = QTextEdit()
+            t_box.setReadOnly(True)
+            t_box.setPlainText(transcript)
+            t_box.setFixedHeight(120)
+            t_box.setStyleSheet(f"""
+                QTextEdit {{
+                    background: {t_bg}; border: 1px solid {card_br};
+                    border-radius: 8px; color: {resp_c}; font-size: 9pt; padding: 4px;
+                }}
+            """)
+            dl.addWidget(t_box)
 
-        copy_btn = QPushButton("Copy response")
-        copy_btn.setFont(QFont("Segoe UI", 8))
-        copy_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: 1px solid {h_copy_br};
-                border-radius: 6px; color: {h_copy_c};
-                padding: 2px 10px; max-width: 110px; font-size: 9pt;
-            }}
-            QPushButton:hover {{ border-color: {h_tog_hbr}; color: {h_tog_hc}; }}
-        """)
-        response_text = data.get("response", "")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(response_text))
+        for entry in session.get("analyses", []):
+            af = QFrame()
+            af.setStyleSheet(f"""
+                QFrame {{
+                    background: {"rgba(0,199,255,0.07)" if d else "rgba(0,122,255,0.06)"};
+                    border-left: 2px solid {"rgba(0,199,255,0.35)" if d else "rgba(0,122,255,0.35)"};
+                    border-radius: 6px;
+                }}
+            """)
+            al = QVBoxLayout(af)
+            al.setContentsMargins(10, 8, 10, 8)
+            al.setSpacing(3)
+            sel_lbl = QLabel(f"🔍  \"{entry.get('selection', '')}\"  ·  {entry.get('timestamp', '')}")
+            sel_lbl.setFont(QFont("Segoe UI", 8))
+            sel_lbl.setStyleSheet(f"color: {tog_c};")
+            sel_lbl.setWordWrap(True)
+            analysis_lbl = QLabel(entry.get("analysis", ""))
+            analysis_lbl.setFont(QFont("Segoe UI", 9))
+            analysis_lbl.setStyleSheet(f"color: {resp_c};")
+            analysis_lbl.setWordWrap(True)
+            al.addWidget(sel_lbl)
+            al.addWidget(analysis_lbl)
+            dl.addWidget(af)
 
-        detail_layout.addWidget(resp_lbl)
-        detail_layout.addWidget(copy_btn)
+        cl.addWidget(detail)
 
-        # Topics
-        for t in data.get("topics", []):
-            t_row = QHBoxLayout()
-            t_icon = QLabel(t.get("icon", "🔗"))
-            t_icon.setFont(QFont("Segoe UI", 10))
-            t_icon.setFixedWidth(20)
-            t_title = QLabel(f"<b>{t.get('title','')}</b> — {t.get('detail','')}")
-            t_title.setFont(QFont("Segoe UI", 9))
-            t_title.setStyleSheet(f"color: {h_snip_col};")
-            t_title.setWordWrap(True)
-            t_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            t_row.addWidget(t_icon)
-            t_row.addWidget(t_title, 1)
-            detail_layout.addLayout(t_row)
-
-        card_layout.addWidget(detail_widget)
-
-        # Toggle logic
-        def toggle():
-            visible = not detail_widget.isVisible()
-            detail_widget.setVisible(visible)
-            toggle_btn.setText("▴ Hide" if visible else "▾ Show")
-        toggle_btn.clicked.connect(toggle)
-
-        # Insert before the stretch at the end
-        insert_pos = max(0, self.history_layout.count() - 1)
-        self.history_layout.insertWidget(insert_pos, card)
-
-        # Scroll history to bottom
-        QTimer.singleShot(50, lambda: self.history_scroll.verticalScrollBar().setValue(
-            self.history_scroll.verticalScrollBar().maximum()
-        ))
-
-    # ── MODE BAR ──────────────────────────────────────────────────────────────
-    def _build_mode_bar(self):
-        """Horizontal row of mode selection pills."""
-        bar = QFrame()
-        bar.setObjectName("mode_bar")
-        bl = QHBoxLayout(bar)
-        bl.setContentsMargins(12, 7, 12, 7)
-        bl.setSpacing(6)
-        self._mode_btns = {}
-        for key, label in MODE_LABELS.items():
-            btn = QPushButton(label)
-            btn.setObjectName("mode_pill")
-            btn.setFixedHeight(24)
-            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            btn.clicked.connect(lambda checked, m=key: self._set_mode(m))
-            self._mode_btns[key] = btn
-            bl.addWidget(btn)
-        self._update_mode_pills()
-        return bar
-
-    def _set_mode(self, mode: str):
-        self.mode = mode
-        self.config["mode"] = mode
-        save_config(self.config)
-        self._update_mode_pills()
-
-    def _update_mode_pills(self):
-        if not hasattr(self, '_mode_btns'):
-            return
-        d = (self._theme != "light")
-        for key, btn in self._mode_btns.items():
-            c = MODE_COLORS[key]
-            if key == self.mode:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {c}33;
-                        border: 1px solid {c}99;
-                        border-radius: 12px;
-                        color: {c};
-                        font-size: 8pt; font-weight: 700;
-                        padding: 2px 10px;
-                    }}
-                """)
-            else:
-                unsel_br = "rgba(255,255,255,0.1)" if d else "rgba(60,60,67,0.15)"
-                unsel_c  = "rgba(235,235,245,0.35)" if d else "rgba(60,60,67,0.4)"
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: transparent;
-                        border: 1px solid {unsel_br};
-                        border-radius: 12px;
-                        color: {unsel_c};
-                        font-size: 8pt; font-weight: 600;
-                        padding: 2px 10px;
-                    }}
-                    QPushButton:hover {{
-                        background: {c}18;
-                        border-color: {c}55;
-                        color: {c}cc;
-                    }}
-                """)
+        def _toggle(btn=toggle_btn, w=detail):
+            vis = not w.isVisible()
+            w.setVisible(vis)
+            btn.setText("▴ Collapse" if vis else "▾ Expand")
+        toggle_btn.clicked.connect(_toggle)
+        return card
 
     # ── STYLES ────────────────────────────────────────────────────────────────
     def _apply_styles(self):
@@ -1467,7 +1614,6 @@ class OverlayWindow(QWidget):
             b_main      = "rgba(255,255,255,0.09)"
             c_header    = "rgba(255,255,255,0.04)"
             c_ctrl      = "rgba(255,255,255,0.03)"
-            c_mode_bar  = "rgba(255,255,255,0.02)"
             t_title     = "rgba(235,235,245,0.45)"
             t_primary   = "#F2F2F7"
             t_second    = "rgba(235,235,245,0.6)"
@@ -1500,7 +1646,6 @@ class OverlayWindow(QWidget):
             b_main      = "rgba(60,60,67,0.13)"
             c_header    = "rgba(0,0,0,0.03)"
             c_ctrl      = "rgba(0,0,0,0.02)"
-            c_mode_bar  = "rgba(0,0,0,0.015)"
             t_title     = "rgba(60,60,67,0.45)"
             t_primary   = "#1C1C1E"
             t_second    = "rgba(60,60,67,0.65)"
@@ -1554,10 +1699,13 @@ class OverlayWindow(QWidget):
             #dot_inactive {{ color: {dot_inact}; font-size: 9pt; }}
             #dot_active   {{ color: {dot_active}; font-size: 9pt; }}
 
-            #mode_bar {{
-                background: {c_mode_bar};
-                border-bottom: 1px solid {b_main};
+            #analyze_btn {{
+                background: {accent_bg};
+                border: 1px solid {accent_br};
+                border-radius: 8px; color: {accent};
+                font-size: 8pt; font-weight: 600; padding: 0 10px;
             }}
+            #analyze_btn:hover {{ background: rgba(99,102,241,0.22); }}
 
             #icon_btn {{
                 background: transparent; border: none;
@@ -1724,8 +1872,6 @@ class OverlayWindow(QWidget):
                 color: {t_second};
             }}
         """)
-        # Refresh mode pills to match current theme
-        self._update_mode_pills()
 
     # ── DEVICES ───────────────────────────────────────────────────────────────
 
@@ -1825,8 +1971,10 @@ class OverlayWindow(QWidget):
     def _toggle_recording(self):
         if self.capture:
             self._stop_recording()
+            self._end_session()
         else:
             self._start_recording()
+            self._start_session()
 
     def _start_recording(self):
         if not self.whisper:
@@ -1968,128 +2116,18 @@ class OverlayWindow(QWidget):
         if len(self._display_transcript) > 3000:
             self._display_transcript = self._display_transcript[-3000:]
 
-        self.transcript_box.setPlainText(self._display_transcript.strip()[-600:])
-        cursor = self.transcript_box.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.transcript_box.setTextCursor(cursor)
+        # Update display (freeze if user has active selection)
+        if not self._pending_display_update:
+            self.transcript_box.setPlainText(self._display_transcript.strip()[-2000:])
+            cursor = self.transcript_box.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.transcript_box.setTextCursor(cursor)
+            if self._highlight_phrases:
+                self._apply_highlights(list(self._highlight_phrases))
 
-        # Debounce Claude calls — only call if no new transcription for 1.5s
-        if hasattr(self, '_claude_timer'):
-            self._claude_timer.stop()
-        self._claude_timer = QTimer()
-        self._claude_timer.setSingleShot(True)
-        self._claude_timer.timeout.connect(self._fetch_suggestions)
-        self._claude_timer.start(1500)
+        # Keep highlight timer ticking while speech is coming in
+        self._schedule_highlight_pass()
 
-        # Silence watchdog — if no new speech for 12s, auto-archive current
-        # exchange to history and start fresh (captures natural turn-taking)
-        if hasattr(self, '_silence_timer'):
-            self._silence_timer.stop()
-        self._silence_timer = QTimer()
-        self._silence_timer.setSingleShot(True)
-        self._silence_timer.timeout.connect(self._auto_archive)
-        self._silence_timer.start(12000)
-
-    # ── AUTO ARCHIVE ON SILENCE ───────────────────────────────────────────────
-    def _auto_archive(self):
-        """Called after a silence gap — archives current exchange to history
-        and resets the transcript so the next question starts fresh."""
-        if not self.full_transcript.strip():
-            return
-        # Need at least 10 words to be worth archiving
-        if len(self.full_transcript.strip().split()) < 10:
-            return
-
-        # Save current response to history if we have one
-        if hasattr(self, '_last_suggestion_data') and self._last_suggestion_data:
-            snippet = self.full_transcript.strip().split()[-12:]
-            self._add_history_entry(self._last_suggestion_data, " ".join(snippet))
-
-        # Flash the transcript box to signal the reset
-        self.transcript_box.setStyleSheet("QTextEdit { border: 1px solid rgba(0,212,255,80); }")
-        QTimer.singleShot(400, lambda: self.transcript_box.setStyleSheet(""))
-
-        # Reset transcript state for next exchange
-        self.full_transcript = ""
-        self._last_suggestion_data = None
-        self._last_transcribed = ""
-        self._last_words = []
-        self.transcript_box.clear()
-        self.transcript_box.setPlaceholderText("Listening for next question...")
-        self._set_response_text("Waiting for next question...", thinking=True)
-
-    # ── AI SUGGESTIONS ────────────────────────────────────────────────────────
-    def _fetch_suggestions(self):
-        api_key = self.config.get("api_key", "")
-        if not api_key:
-            self._set_response_text("🔑 Add your Anthropic API key in Settings (⚙) to enable suggestions.", error=True)
-            return
-
-        custom_prompts = self.config.get("custom_prompts", {})
-        worker = ClaudeWorker(api_key, self.mode, self.full_transcript,
-                              briefing=self._briefing, custom_prompts=custom_prompts)
-        worker.result.connect(self._render_suggestions)
-        worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
-        self.claude_q.append(worker)
-        worker.finished.connect(lambda: self.claude_q.remove(worker) if worker in self.claude_q else None)
-        self._set_response_text("Analyzing conversation...", thinking=True)
-        worker.start()
-
-    def _render_suggestions(self, data: dict):
-        # Store for potential auto-archive use
-        self._last_suggestion_data = data
-        # Save to history before rendering live view
-        snippet = self.full_transcript.strip().split()[-12:]  # last ~12 words as snippet
-        self._add_history_entry(data, " ".join(snippet))
-
-        # Response
-        self._set_response_text(data.get("response", ""))
-
-        # Topics
-        while self.topics_layout.count():
-            item = self.topics_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        for t in data.get("topics", []):
-            card = self._make_topic_card(t)
-            self.topics_layout.addWidget(card)
-
-        # Follow-ups
-        while self.followups_layout.count():
-            item = self.followups_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        followups = data.get("followups", [])
-        if followups:
-            self.followups_label.show()
-            self.followups_frame.show()
-            d = (self._theme != "light")
-            chip_bg  = "rgba(0,199,255,0.09)"    if d else "rgba(0,122,255,0.07)"
-            chip_br  = "rgba(0,199,255,0.22)"    if d else "rgba(0,122,255,0.18)"
-            chip_c   = "#00C7FF"                 if d else "#007AFF"
-            chip_hov = "rgba(0,199,255,0.18)"    if d else "rgba(0,122,255,0.14)"
-            for q in followups:
-                chip = QPushButton(q)
-                chip.setObjectName("followup_chip")
-                chip.setFont(QFont("Segoe UI", 9))
-                chip.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {chip_bg};
-                        border: 1px solid {chip_br};
-                        border-radius: 12px; color: {chip_c};
-                        padding: 5px 14px; text-align: left;
-                        font-weight: 500;
-                    }}
-                    QPushButton:hover {{ background: {chip_hov}; border-color: {chip_c}44; }}
-                """)
-                chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                chip.clicked.connect(lambda _, text=q: QApplication.clipboard().setText(text))
-                chip.setToolTip("Click to copy")
-                # Note: QPushButton has no setWordWrap — use a fixed max width instead
-                chip.setMaximumWidth(370)
-                self.followups_layout.addWidget(chip)
         else:
             self.followups_label.hide()
             self.followups_frame.hide()
@@ -2208,17 +2246,22 @@ class OverlayWindow(QWidget):
 
         # Wipe transcript state
         self.full_transcript = ""
-        self._last_suggestion_data = None
         self._last_transcribed = ""
         self._last_words = []
         self._last_words_mic = []
         self._last_words_sys = []
         self._display_transcript = ""
-        self._export_entries.clear()
         self._briefing = ""
         self._briefing_edit.clear()
-        if hasattr(self, '_claude_timer'):
-            self._claude_timer.stop()
+
+        # Reset session/analysis state
+        self._current_session = None
+        self._session_start = None
+        self._analyses = []
+        self._highlight_phrases = set()
+        self._current_selection = ""
+        self._pending_display_update = False
+        self._stop_highlight_timer()
 
         # Cancel any in-flight workers
         for w in self.transcribe_q:
@@ -2252,68 +2295,62 @@ class OverlayWindow(QWidget):
         self.followups_label.hide()
         self.followups_frame.hide()
 
-        # Clear history tab
-        while self.history_layout.count():
-            item = self.history_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-        self.history_layout.addWidget(self._make_history_placeholder())
-        self.history_layout.addStretch()
+        # Refresh sessions tab
+        self._load_sessions_into_tab()
 
         # Restart recording if it was running
         if was_recording:
             QTimer.singleShot(300, self._start_recording)
 
-    # ── MODE ──────────────────────────────────────────────────────────────────
-    def _cycle_mode(self):
-        idx = MODES.index(self.mode)
-        self._set_mode(MODES[(idx + 1) % len(MODES)])
-
-    def _update_mode_btn(self):
-        self._update_mode_pills()
 
     # ── SETTINGS ──────────────────────────────────────────────────────────────
     def _export_session(self):
         import datetime
         now = datetime.datetime.now()
+        session_title = (self._current_session or {}).get("title", "Session")
         filename = os.path.join(
             os.path.expanduser("~"), "Documents",
-            f"PandAI_Session_{now.strftime('%Y%m%d_%H%M%S')}.txt"
+            f"PandAI_{now.strftime('%Y%m%d_%H%M%S')}.txt"
         )
         sep = "=" * 52
+        briefing = self._briefing.strip()
         lines = [
             "PandAI Assistant — Session Export",
-            f"Date : {now.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Mode : {MODE_LABELS.get(self.mode, self.mode)}",
+            f"Title : {session_title}",
+            f"Date  : {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        if briefing:
+            lines += ["", f"Briefing: {briefing}"]
+        lines += [
             "",
             sep, "TRANSCRIPT", sep,
             self.full_transcript.strip() or "(no transcript recorded)",
-            "",
-            sep, "SUGGESTIONS", sep,
         ]
-        if not self._export_entries:
-            lines.append("(no suggestions generated this session)")
-        for entry in self._export_entries:
-            lines += [
-                f"\n[{entry['time']}]",
-                f"Context : {entry['snippet']}",
-                f"Response: {entry['response']}",
-            ]
-            if entry["topics"]:
-                lines.append("Topics  : " + " | ".join(t.get("title", "") for t in entry["topics"]))
-            if entry["followups"]:
-                lines.append("Ask next: " + " | ".join(entry["followups"]))
+        if self._analyses:
+            lines += ["", sep, "ANALYSES", sep]
+            for a in self._analyses:
+                lines += [
+                    f"\n[{a.get('timestamp', '')}]",
+                    f"Selection : {a.get('selection', '')}",
+                    f"Analysis  : {a.get('analysis', '')}",
+                ]
+                if a.get("connected"):
+                    lines.append("Connected : " + " | ".join(
+                        f"{c.get('icon','')} {c.get('title','')}" for c in a["connected"]
+                    ))
+                if a.get("followups"):
+                    lines.append("Follow-ups: " + " | ".join(a["followups"]))
         try:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             with open(filename, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
-            # Brief feedback on the button
             self.export_btn.setText("✓")
             self.export_btn.setToolTip(f"Saved: {filename}")
             QTimer.singleShot(2000, lambda: (
                 self.export_btn.setText("↓"),
-                self.export_btn.setToolTip("Export session transcript and suggestions to .txt")
+                self.export_btn.setToolTip("Export session transcript and analyses to .txt")
             ))
-        except Exception as e:
+        except Exception:
             self.export_btn.setText("✗")
             QTimer.singleShot(2000, lambda: self.export_btn.setText("↓"))
 
