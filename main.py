@@ -922,6 +922,7 @@ class OverlayWindow(QWidget):
         # Per-source dedup state for speaker labels
         self._last_words_mic = []
         self._last_words_sys = []
+        self._last_display_source = None   # track last speaker for line continuity
         # Selection & analysis
         self._current_selection      = ""     # text user has selected
         self._pending_display_update = False  # freeze transcript updates during selection
@@ -1475,16 +1476,24 @@ class OverlayWindow(QWidget):
         return lbl
 
     def _load_sessions_into_tab(self):
+        # Clear existing items — must delete both widgets AND spacers to avoid leaks/crashes
         while self.sessions_layout.count():
             item = self.sessions_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.deleteLater()
+            else:
+                del item  # explicitly free QSpacerItem / QLayoutItem
         sessions = load_sessions()
         if not sessions:
             self.sessions_layout.addWidget(self._make_sessions_placeholder())
             self.sessions_layout.addStretch()
             return
         for session in reversed(sessions[-30:]):
-            self.sessions_layout.addWidget(self._make_session_card(session))
+            try:
+                self.sessions_layout.addWidget(self._make_session_card(session))
+            except Exception:
+                pass
         self.sessions_layout.addStretch()
 
     def _make_session_card(self, session: dict):
@@ -2074,31 +2083,38 @@ class OverlayWindow(QWidget):
         last_words = self._last_words_mic if source == "mic" else self._last_words_sys
         curr_words = text.split()
 
-        overlap = 0
-        max_check = min(len(last_words), len(curr_words), 20)
-        for n in range(max_check, 0, -1):
-            if last_words[-n:] == curr_words[:n]:
-                overlap = n
+        # Search for the longest suffix of last_words anywhere in curr_words.
+        # This handles the sliding window case where repeated words appear mid-transcript.
+        overlap_end = 0   # index in curr_words after the matched region
+        max_suffix = min(len(last_words), len(curr_words), 20)
+        found_overlap = False
+        for n in range(max_suffix, 1, -1):
+            suffix = last_words[-n:]
+            for i in range(len(curr_words) - n + 1):
+                if curr_words[i:i+n] == suffix:
+                    overlap_end = i + n
+                    found_overlap = True
+                    break
+            if found_overlap:
                 break
 
-        if overlap == 0 and last_words:
-            ratio = difflib.SequenceMatcher(
-                None,
-                " ".join(last_words[-len(curr_words):]).lower(),
-                " ".join(curr_words).lower()
-            ).ratio()
-            if ratio > 0.85:
-                if source == "mic":
-                    self._last_words_mic = curr_words
-                else:
-                    self._last_words_sys = curr_words
-                return
-
-        new_words = curr_words[overlap:]
+        # Update stored words with the full current window
         if source == "mic":
             self._last_words_mic = curr_words
         else:
             self._last_words_sys = curr_words
+
+        new_words = curr_words[overlap_end:]
+
+        # If no overlap found and we have previous words, check if it's a near-duplicate
+        if not found_overlap and last_words:
+            ratio = difflib.SequenceMatcher(
+                None,
+                " ".join(last_words).lower(),
+                " ".join(curr_words).lower()
+            ).ratio()
+            if ratio > 0.85:
+                return  # near-identical to what we already showed
 
         if not new_words:
             return
@@ -2111,8 +2127,12 @@ class OverlayWindow(QWidget):
         if len(self.full_transcript) > 2000:
             self.full_transcript = self.full_transcript[-2000:]
 
-        # Display transcript — labelled, shown in the box
-        self._display_transcript += f"\n{label}: {new_text}"
+        # Display transcript — same speaker continues on same line; new speaker starts new line
+        if source == self._last_display_source and self._display_transcript:
+            self._display_transcript += " " + new_text
+        else:
+            self._display_transcript += f"\n{label}: {new_text}"
+            self._last_display_source = source
         if len(self._display_transcript) > 3000:
             self._display_transcript = self._display_transcript[-3000:]
 
@@ -2246,6 +2266,7 @@ class OverlayWindow(QWidget):
         self._last_words = []
         self._last_words_mic = []
         self._last_words_sys = []
+        self._last_display_source = None
         self._display_transcript = ""
         self._briefing = ""
         self._briefing_edit.clear()
