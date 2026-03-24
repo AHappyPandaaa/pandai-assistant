@@ -1363,6 +1363,8 @@ class OverlayWindow(QWidget):
             return
         worker = HighlightWorker(api_key, self.full_transcript)
         worker.phrases_ready.connect(self._apply_highlights)
+        self.claude_q.append(worker)
+        worker.finished.connect(lambda: self.claude_q.remove(worker) if worker in self.claude_q else None)
         worker.start()
 
     def _apply_highlights(self, phrases: list):
@@ -1452,6 +1454,8 @@ class OverlayWindow(QWidget):
                 sid = self._current_session["id"]
                 tw = SessionTitleWorker(api_key, self.full_transcript, self._briefing)
                 tw.title_ready.connect(lambda t: self._update_session_title(sid, t))
+                self.claude_q.append(tw)
+                tw.finished.connect(lambda: self.claude_q.remove(tw) if tw in self.claude_q else None)
                 tw.start()
         self._current_session = None
         self._session_start   = None
