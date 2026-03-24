@@ -2596,12 +2596,19 @@ if __name__ == "__main__":
     sys.excepthook = _write_crash_log
 
     # faulthandler catches C++ level segfaults that bypass sys.excepthook
-    import faulthandler
-    _fault_log = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
+    # Both levels are wrapped — pythonw.exe has sys.stderr=None which crashes faulthandler.enable()
     try:
-        faulthandler.enable(file=open(_fault_log, "a"), all_threads=True)
+        import faulthandler
+        _fault_log = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
+        _fault_file = open(_fault_log, "a")
+        faulthandler.enable(file=_fault_file, all_threads=True)
     except Exception:
-        faulthandler.enable()  # fall back to stderr if file can't be opened
+        try:
+            import faulthandler
+            if sys.stderr is not None:
+                faulthandler.enable()
+        except Exception:
+            pass  # pythonw.exe has no stderr — skip faulthandler silently
 
     app = QApplication(sys.argv)
     app.setApplicationName("PandAI Assistant")
