@@ -1493,6 +1493,23 @@ class OverlayWindow(QWidget):
                 pass
         self.sessions_layout.addStretch()
 
+    def _delete_session(self, session_id: str, card_widget):
+        """Remove a session from disk and from the sessions tab."""
+        sessions = load_sessions()
+        sessions = [s for s in sessions if s.get("id") != session_id]
+        save_sessions(sessions)
+        # Remove the card from the layout and delete the widget
+        self.sessions_layout.removeWidget(card_widget)
+        card_widget.deleteLater()
+        # If no sessions left, show placeholder
+        remaining = [
+            self.sessions_layout.itemAt(i).widget()
+            for i in range(self.sessions_layout.count())
+            if self.sessions_layout.itemAt(i).widget()
+        ]
+        if not remaining:
+            self.sessions_layout.insertWidget(0, self._make_sessions_placeholder())
+
     def _make_session_card(self, session: dict):
         d = (self._theme != "light")
         card_bg  = "rgba(44,44,46,0.5)"      if d else "rgba(255,255,255,0.78)"
@@ -1548,8 +1565,26 @@ class OverlayWindow(QWidget):
             }}
             QPushButton:hover {{ color: {tog_hc}; border-color: {tog_hbr}; }}
         """)
+
+        del_btn = QPushButton("✕")
+        del_btn.setFont(QFont("Segoe UI", 8))
+        del_btn.setFixedSize(22, 22)
+        del_btn.setToolTip("Delete session")
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid transparent;
+                border-radius: 5px; color: {"rgba(235,235,245,0.25)" if d else "rgba(60,60,67,0.25)"};
+            }}
+            QPushButton:hover {{
+                color: #FF453A; border-color: rgba(255,69,58,0.4);
+                background: rgba(255,69,58,0.1);
+            }}
+        """)
+
         hrow.addWidget(title_lbl, 1)
         hrow.addWidget(toggle_btn)
+        hrow.addSpacing(4)
+        hrow.addWidget(del_btn)
         cl.addLayout(hrow)
         cl.addWidget(meta_lbl)
 
@@ -1625,6 +1660,7 @@ class OverlayWindow(QWidget):
                 btn.setText("▾ Expand")
 
         toggle_btn.clicked.connect(_toggle)
+        del_btn.clicked.connect(lambda: self._delete_session(session.get("id", ""), card))
         return card
 
     # ── STYLES ────────────────────────────────────────────────────────────────
