@@ -2553,7 +2553,8 @@ def _relaunch_as_admin():
     if os.path.exists(pythonw):
         exe = pythonw  # suppress console in the elevated process too
     script = os.path.abspath(sys.argv[0])
-    ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, f'"{script}"', None, 1)
+    work_dir = os.path.dirname(script)  # always start in the app folder
+    ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, f'"{script}"', work_dir, 1)
     return ret > 32  # > 32 = success; <= 32 = denied or error
 
 def _write_crash_log(exc_type, exc_value, exc_tb):
