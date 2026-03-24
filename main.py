@@ -1560,17 +1560,18 @@ class OverlayWindow(QWidget):
         if transcript:
             tl = self._section_label("TRANSCRIPT")
             dl.addWidget(tl)
-            t_box = QTextEdit()
-            t_box.setReadOnly(True)
-            t_box.setPlainText(transcript)
-            t_box.setFixedHeight(120)
-            t_box.setStyleSheet(f"""
-                QTextEdit {{
+            # Use QLabel instead of QTextEdit to avoid nested-QScrollArea crash
+            t_lbl = QLabel(transcript[:800] + ("…" if len(transcript) > 800 else ""))
+            t_lbl.setFont(QFont("Segoe UI", 9))
+            t_lbl.setStyleSheet(f"""
+                QLabel {{
                     background: {t_bg}; border: 1px solid {card_br};
-                    border-radius: 8px; color: {resp_c}; font-size: 9pt; padding: 4px;
+                    border-radius: 8px; color: {resp_c}; padding: 6px 8px;
                 }}
             """)
-            dl.addWidget(t_box)
+            t_lbl.setWordWrap(True)
+            t_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            dl.addWidget(t_lbl)
 
         for entry in session.get("analyses", []):
             af = QFrame()
