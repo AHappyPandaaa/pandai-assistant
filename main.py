@@ -1668,7 +1668,7 @@ class OverlayWindow(QWidget):
 
             return w
 
-        def _toggle(btn=toggle_btn):
+        def _toggle(checked=False, btn=toggle_btn):
             if not _state["expanded"]:
                 detail = _build_detail()
                 _card_layout.addWidget(detail)
