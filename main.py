@@ -1549,60 +1549,77 @@ class OverlayWindow(QWidget):
         cl.addLayout(hrow)
         cl.addWidget(meta_lbl)
 
-        # Collapsible detail
-        detail = QWidget()
-        detail.setVisible(False)
-        dl = QVBoxLayout(detail)
-        dl.setContentsMargins(0, 8, 0, 0)
-        dl.setSpacing(8)
+        # Capture data needed for lazy detail build
+        _state       = {"expanded": False, "widget": None}
+        _session     = session
+        _colors      = (d, card_br, tog_c, resp_c, t_bg)
+        _card_layout = cl
 
-        transcript = session.get("transcript", "").strip()
-        if transcript:
-            tl = self._section_label("TRANSCRIPT")
-            dl.addWidget(tl)
-            # Use QLabel instead of QTextEdit to avoid nested-QScrollArea crash
-            t_lbl = QLabel(transcript[:800] + ("…" if len(transcript) > 800 else ""))
-            t_lbl.setFont(QFont("Segoe UI", 9))
-            t_lbl.setStyleSheet(f"""
-                QLabel {{
-                    background: {t_bg}; border: 1px solid {card_br};
-                    border-radius: 8px; color: {resp_c}; padding: 6px 8px;
-                }}
-            """)
-            t_lbl.setWordWrap(True)
-            t_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            dl.addWidget(t_lbl)
+        def _build_detail():
+            d_, card_br_, tog_c_, resp_c_, t_bg_ = _colors
+            w = QWidget()
+            dl = QVBoxLayout(w)
+            dl.setContentsMargins(0, 8, 0, 0)
+            dl.setSpacing(8)
 
-        for entry in session.get("analyses", []):
-            af = QFrame()
-            af.setStyleSheet(f"""
-                QFrame {{
-                    background: {"rgba(0,199,255,0.07)" if d else "rgba(0,122,255,0.06)"};
-                    border-left: 2px solid {"rgba(0,199,255,0.35)" if d else "rgba(0,122,255,0.35)"};
-                    border-radius: 6px;
-                }}
-            """)
-            al = QVBoxLayout(af)
-            al.setContentsMargins(10, 8, 10, 8)
-            al.setSpacing(3)
-            sel_lbl = QLabel(f"🔍  \"{entry.get('selection', '')}\"  ·  {entry.get('timestamp', '')}")
-            sel_lbl.setFont(QFont("Segoe UI", 8))
-            sel_lbl.setStyleSheet(f"color: {tog_c};")
-            sel_lbl.setWordWrap(True)
-            analysis_lbl = QLabel(entry.get("analysis", ""))
-            analysis_lbl.setFont(QFont("Segoe UI", 9))
-            analysis_lbl.setStyleSheet(f"color: {resp_c};")
-            analysis_lbl.setWordWrap(True)
-            al.addWidget(sel_lbl)
-            al.addWidget(analysis_lbl)
-            dl.addWidget(af)
+            transcript = _session.get("transcript", "").strip()
+            if transcript:
+                hdr = QLabel("TRANSCRIPT")
+                hdr.setObjectName("section_label")
+                dl.addWidget(hdr)
+                t_lbl = QLabel(transcript[:800] + ("…" if len(transcript) > 800 else ""))
+                t_lbl.setFont(QFont("Segoe UI", 9))
+                t_lbl.setStyleSheet(
+                    f"QLabel {{ background: {t_bg_}; border: 1px solid {card_br_};"
+                    f" border-radius: 8px; color: {resp_c_}; padding: 6px 8px; }}"
+                )
+                t_lbl.setWordWrap(True)
+                t_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                dl.addWidget(t_lbl)
 
-        cl.addWidget(detail)
+            for entry in _session.get("analyses", []):
+                af = QFrame()
+                af_bg  = "rgba(0,199,255,0.07)" if d_ else "rgba(0,122,255,0.06)"
+                af_br  = "rgba(0,199,255,0.35)" if d_ else "rgba(0,122,255,0.35)"
+                af.setStyleSheet(
+                    f"QFrame {{ background: {af_bg}; border-left: 2px solid {af_br};"
+                    f" border-radius: 6px; }}"
+                )
+                al = QVBoxLayout(af)
+                al.setContentsMargins(10, 8, 10, 8)
+                al.setSpacing(3)
+                sel_lbl = QLabel(
+                    f"\U0001f50d  \"{entry.get('selection', '')}\"  ·  {entry.get('timestamp', '')}"
+                )
+                sel_lbl.setFont(QFont("Segoe UI", 8))
+                sel_lbl.setStyleSheet(f"color: {tog_c_};")
+                sel_lbl.setWordWrap(True)
+                analysis_lbl = QLabel(entry.get("analysis", ""))
+                analysis_lbl.setFont(QFont("Segoe UI", 9))
+                analysis_lbl.setStyleSheet(f"color: {resp_c_};")
+                analysis_lbl.setWordWrap(True)
+                al.addWidget(sel_lbl)
+                al.addWidget(analysis_lbl)
+                dl.addWidget(af)
 
-        def _toggle(btn=toggle_btn, w=detail):
-            vis = not w.isVisible()
-            w.setVisible(vis)
-            btn.setText("▴ Collapse" if vis else "▾ Expand")
+            return w
+
+        def _toggle(btn=toggle_btn):
+            if not _state["expanded"]:
+                detail = _build_detail()
+                _card_layout.addWidget(detail)
+                detail.show()
+                _state["widget"] = detail
+                _state["expanded"] = True
+                btn.setText("▴ Collapse")
+            else:
+                if _state["widget"]:
+                    _card_layout.removeWidget(_state["widget"])
+                    _state["widget"].deleteLater()
+                    _state["widget"] = None
+                _state["expanded"] = False
+                btn.setText("▾ Expand")
+
         toggle_btn.clicked.connect(_toggle)
         return card
 
