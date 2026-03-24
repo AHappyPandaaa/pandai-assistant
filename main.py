@@ -960,9 +960,9 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(420, 500)
         self.resize(460, 700)
-        # Position: right side of primary screen
+        # Position: right side of primary screen (account for multi-monitor x offset)
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.width() - 480, 60)
+        self.move(screen.x() + screen.width() - 480, screen.y() + 60)
 
     # ── UI BUILD ──────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -2535,6 +2535,18 @@ class OverlayWindow(QWidget):
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
+def _get_desktop_path():
+    """Return the real Desktop path, even when redirected to OneDrive."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(300)
+        ctypes.windll.shell32.SHGetFolderPathW(0, 0x0000, 0, 0, buf)  # CSIDL_DESKTOP
+        if buf.value and os.path.isdir(buf.value):
+            return buf.value
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
 def _is_admin():
     """Return True if the current process has admin/elevated privileges."""
     try:
@@ -2559,7 +2571,7 @@ def _relaunch_as_admin():
 
 def _write_crash_log(exc_type, exc_value, exc_tb):
     import traceback, datetime
-    log_path = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
+    log_path = os.path.join(_get_desktop_path(), "pandai_assistant_crash.txt")
     lines = traceback.format_exception(exc_type, exc_value, exc_tb)
     msg = f"[{datetime.datetime.now()}]\n{''.join(lines)}\n"
     try:
@@ -2567,7 +2579,7 @@ def _write_crash_log(exc_type, exc_value, exc_tb):
             f.write(msg)
     except Exception:
         pass
-    print(msg)
+    # Note: no print() here — pythonw.exe has no stdout
     # Also show a Qt message box if app is running
     try:
         from PyQt6.QtWidgets import QMessageBox
@@ -2600,7 +2612,7 @@ if __name__ == "__main__":
     # Both levels are wrapped — pythonw.exe has sys.stderr=None which crashes faulthandler.enable()
     try:
         import faulthandler
-        _fault_log = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
+        _fault_log = os.path.join(_get_desktop_path(), "pandai_assistant_crash.txt")
         _fault_file = open(_fault_log, "a")
         faulthandler.enable(file=_fault_file, all_threads=True)
     except Exception:
