@@ -10,6 +10,9 @@ import threading
 import queue
 import time
 import json
+import datetime
+import uuid
+import difflib
 import numpy as np
 import sounddevice as sd
 import anthropic
@@ -19,16 +22,15 @@ from faster_whisper import WhisperModel
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextEdit,
-    QScrollArea, QFrame, QSizeGrip, QSlider, QStackedWidget,
+    QScrollArea, QFrame, QSizeGrip, QSlider,
     QSizePolicy, QTabWidget, QCheckBox
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QPoint, QSize, QPropertyAnimation, QEasingCurve,
-    QObject
+    Qt, QTimer, QThread, pyqtSignal, QObject
 )
 from PyQt6.QtGui import (
-    QColor, QPainter, QBrush, QPen, QFont, QFontDatabase,
-    QLinearGradient, QPalette, QCursor, QIcon
+    QColor, QPainter, QBrush, QFont,
+    QLinearGradient, QCursor, QTextCharFormat, QTextCursor
 )
 
 # ── HOTKEY SIGNALER ───────────────────────────────────────────────────────────
@@ -1238,11 +1240,17 @@ class OverlayWindow(QWidget):
         lbl.setObjectName("section_label")
         return lbl
 
-    def _load_saved_history(self):
-        pass  # replaced by _load_sessions_into_tab
+    @staticmethod
+    def _clear_layout(layout):
+        """Remove and delete all items from a QLayout."""
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+            else:
+                del item  # free QSpacerItem / QLayoutItem
 
-    def _add_history_entry(self, data: dict, snippet: str, time_str: str = "", persist: bool = True):
-        pass  # replaced by session-based persistence
 
 
     # ── SELECTION & ON-DEMAND ANALYSIS ───────────────────────────────────────
@@ -1288,7 +1296,6 @@ class OverlayWindow(QWidget):
         worker.start()
 
     def _render_analysis(self, data: dict, selection: str):
-        import datetime
         analysis_entry = {
             "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
             "selection": selection,
@@ -1301,16 +1308,12 @@ class OverlayWindow(QWidget):
         self._set_response_text(data.get("analysis", ""))
 
         # Connected topics
-        while self.topics_layout.count():
-            item = self.topics_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self._clear_layout(self.topics_layout)
         for t in data.get("connected", []):
             self.topics_layout.addWidget(self._make_topic_card(t))
 
         # Follow-up questions
-        while self.followups_layout.count():
-            item = self.followups_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self._clear_layout(self.followups_layout)
 
         followups = data.get("followups", [])
         if followups:
@@ -1368,15 +1371,14 @@ class OverlayWindow(QWidget):
         if self._pending_display_update:
             return
 
-        from PyQt6.QtGui import QTextCharFormat, QTextCursor as _TC
         doc = self.transcript_box.document()
         saved_cursor = self.transcript_box.textCursor()
         saved_anchor = saved_cursor.anchor()
         saved_pos    = saved_cursor.position()
 
         # Clear existing highlights
-        full_c = _TC(doc)
-        full_c.select(_TC.SelectionType.Document)
+        full_c = QTextCursor(doc)
+        full_c.select(QTextCursor.SelectionType.Document)
         clear_fmt = QTextCharFormat()
         clear_fmt.setBackground(QColor(0, 0, 0, 0))
         full_c.mergeCharFormat(clear_fmt)
@@ -1393,16 +1395,16 @@ class OverlayWindow(QWidget):
                 idx = text.lower().find(phrase.lower(), start)
                 if idx == -1:
                     break
-                c = _TC(doc)
+                c = QTextCursor(doc)
                 c.setPosition(idx)
-                c.setPosition(idx + len(phrase), _TC.MoveMode.KeepAnchor)
+                c.setPosition(idx + len(phrase), QTextCursor.MoveMode.KeepAnchor)
                 c.mergeCharFormat(hl_fmt)
                 start = idx + 1
 
         # Restore selection
         restored = self.transcript_box.textCursor()
         restored.setPosition(saved_anchor)
-        restored.setPosition(saved_pos, _TC.MoveMode.KeepAnchor)
+        restored.setPosition(saved_pos, QTextCursor.MoveMode.KeepAnchor)
         self.transcript_box.setTextCursor(restored)
 
     def _flush_transcript_display(self):
@@ -1416,7 +1418,6 @@ class OverlayWindow(QWidget):
 
     # ── SESSION LIFECYCLE ─────────────────────────────────────────────────────
     def _start_session(self):
-        import datetime, uuid
         self._session_start = datetime.datetime.now()
         self._analyses = []
         self._highlight_phrases = set()
@@ -1433,7 +1434,6 @@ class OverlayWindow(QWidget):
     def _end_session(self):
         if not self._current_session:
             return
-        import datetime
         duration = int((datetime.datetime.now() - self._session_start).total_seconds()) if self._session_start else 0
         self._current_session.update({
             "duration_seconds": duration,
@@ -1476,14 +1476,7 @@ class OverlayWindow(QWidget):
         return lbl
 
     def _load_sessions_into_tab(self):
-        # Clear existing items — must delete both widgets AND spacers to avoid leaks/crashes
-        while self.sessions_layout.count():
-            item = self.sessions_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-            else:
-                del item  # explicitly free QSpacerItem / QLayoutItem
+        self._clear_layout(self.sessions_layout)
         sessions = load_sessions()
         if not sessions:
             self.sessions_layout.addWidget(self._make_sessions_placeholder())
@@ -1497,7 +1490,6 @@ class OverlayWindow(QWidget):
         self.sessions_layout.addStretch()
 
     def _make_session_card(self, session: dict):
-        import datetime
         d = (self._theme != "light")
         card_bg  = "rgba(44,44,46,0.5)"      if d else "rgba(255,255,255,0.78)"
         card_br  = "rgba(255,255,255,0.06)"  if d else "rgba(60,60,67,0.09)"
@@ -2074,7 +2066,6 @@ class OverlayWindow(QWidget):
         worker.start()
 
     def _on_transcription(self, text: str, source: str = "mic"):
-        import difflib
         text = text.strip()
         if not text:
             return
@@ -2149,10 +2140,7 @@ class OverlayWindow(QWidget):
         self._schedule_highlight_pass()
 
     def _set_response_text(self, text, error=False, thinking=False):
-        while self.response_layout.count():
-            item = self.response_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_layout(self.response_layout)
 
         d = (self._theme != "light")
         resp_col    = "#F2F2F7"                    if d else "#1C1C1E"
@@ -2262,8 +2250,6 @@ class OverlayWindow(QWidget):
 
         # Wipe transcript state
         self.full_transcript = ""
-        self._last_transcribed = ""
-        self._last_words = []
         self._last_words_mic = []
         self._last_words_sys = []
         self._last_display_source = None
@@ -2297,18 +2283,14 @@ class OverlayWindow(QWidget):
         self._set_response_text("Session cleared. Ready for a new conversation.", thinking=True)
 
         # Clear topics
-        while self.topics_layout.count():
-            item = self.topics_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self._clear_layout(self.topics_layout)
         placeholder = QLabel("Related topics will surface here...")
         placeholder.setObjectName("placeholder_text")
         placeholder.setFont(QFont("Segoe UI", 10))
         self.topics_layout.addWidget(placeholder)
 
         # Clear followups
-        while self.followups_layout.count():
-            item = self.followups_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self._clear_layout(self.followups_layout)
         self.followups_label.hide()
         self.followups_frame.hide()
 
@@ -2322,7 +2304,6 @@ class OverlayWindow(QWidget):
 
     # ── SETTINGS ──────────────────────────────────────────────────────────────
     def _export_session(self):
-        import datetime
         now = datetime.datetime.now()
         session_title = (self._current_session or {}).get("title", "Session")
         filename = os.path.join(
