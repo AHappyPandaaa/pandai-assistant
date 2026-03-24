@@ -1594,6 +1594,27 @@ class OverlayWindow(QWidget):
         _colors      = (d, card_br, tog_c, resp_c, t_bg)
         _card_layout = cl
 
+        def _make_text_box(text, font_size, bg, border, color, max_h=None):
+            """Read-only QTextEdit — safe for arbitrarily long text (no QLabel word-wrap crash)."""
+            tb = QTextEdit()
+            tb.setReadOnly(True)
+            tb.setPlainText(text)
+            tb.setFont(QFont("Segoe UI", font_size))
+            tb.setStyleSheet(
+                f"QTextEdit {{ background: {bg}; border: {border};"
+                f" border-radius: 8px; color: {color}; padding: 6px 8px; }}"
+            )
+            tb.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            tb.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            tb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            if max_h:
+                tb.setMaximumHeight(max_h)
+            # Shrink-to-fit height
+            doc = tb.document()
+            doc.setTextWidth(tb.viewport().width() or 300)
+            tb.setFixedHeight(min(int(doc.size().height()) + 16, max_h or 9999))
+            return tb
+
         def _build_detail():
             d_, card_br_, tog_c_, resp_c_, t_bg_ = _colors
             w = QWidget()
@@ -1606,39 +1627,43 @@ class OverlayWindow(QWidget):
                 hdr = QLabel("TRANSCRIPT")
                 hdr.setObjectName("section_label")
                 dl.addWidget(hdr)
-                t_lbl = QLabel(transcript[:800] + ("…" if len(transcript) > 800 else ""))
-                t_lbl.setFont(QFont("Segoe UI", 9))
-                t_lbl.setStyleSheet(
-                    f"QLabel {{ background: {t_bg_}; border: 1px solid {card_br_};"
-                    f" border-radius: 8px; color: {resp_c_}; padding: 6px 8px; }}"
+                preview = transcript[:1200] + (" …" if len(transcript) > 1200 else "")
+                t_box = _make_text_box(
+                    preview, 9,
+                    t_bg_, f"1px solid {card_br_}", resp_c_, max_h=160
                 )
-                t_lbl.setWordWrap(True)
-                t_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                dl.addWidget(t_lbl)
+                dl.addWidget(t_box)
 
             for entry in _session.get("analyses", []):
                 af = QFrame()
-                af_bg  = "rgba(0,199,255,0.07)" if d_ else "rgba(0,122,255,0.06)"
-                af_br  = "rgba(0,199,255,0.35)" if d_ else "rgba(0,122,255,0.35)"
+                af_bg = "rgba(0,199,255,0.07)" if d_ else "rgba(0,122,255,0.06)"
+                af_br = "rgba(0,199,255,0.35)" if d_ else "rgba(0,122,255,0.35)"
                 af.setStyleSheet(
                     f"QFrame {{ background: {af_bg}; border-left: 2px solid {af_br};"
                     f" border-radius: 6px; }}"
                 )
                 al = QVBoxLayout(af)
                 al.setContentsMargins(10, 8, 10, 8)
-                al.setSpacing(3)
-                sel_lbl = QLabel(
-                    f"\U0001f50d  \"{entry.get('selection', '')}\"  ·  {entry.get('timestamp', '')}"
-                )
+                al.setSpacing(4)
+
+                # Selection header — short, safe as QLabel
+                sel_text = entry.get("selection", "")[:120]
+                ts = entry.get("timestamp", "")
+                sel_lbl = QLabel(f'\U0001f50d  "{sel_text}"  ·  {ts}')
                 sel_lbl.setFont(QFont("Segoe UI", 8))
                 sel_lbl.setStyleSheet(f"color: {tog_c_};")
-                sel_lbl.setWordWrap(True)
-                analysis_lbl = QLabel(entry.get("analysis", ""))
-                analysis_lbl.setFont(QFont("Segoe UI", 9))
-                analysis_lbl.setStyleSheet(f"color: {resp_c_};")
-                analysis_lbl.setWordWrap(True)
+                sel_lbl.setWordWrap(False)  # short enough — no word-wrap crash risk
                 al.addWidget(sel_lbl)
-                al.addWidget(analysis_lbl)
+
+                # Analysis body — potentially long, use QTextEdit
+                analysis = entry.get("analysis", "")
+                if analysis:
+                    a_box = _make_text_box(
+                        analysis, 9,
+                        "transparent", "none", resp_c_, max_h=300
+                    )
+                    al.addWidget(a_box)
+
                 dl.addWidget(af)
 
             return w
@@ -2569,6 +2594,14 @@ if __name__ == "__main__":
                 sys.exit(0)
 
     sys.excepthook = _write_crash_log
+
+    # faulthandler catches C++ level segfaults that bypass sys.excepthook
+    import faulthandler
+    _fault_log = os.path.join(os.path.expanduser("~"), "Desktop", "pandai_assistant_crash.txt")
+    try:
+        faulthandler.enable(file=open(_fault_log, "a"), all_threads=True)
+    except Exception:
+        faulthandler.enable()  # fall back to stderr if file can't be opened
 
     app = QApplication(sys.argv)
     app.setApplicationName("PandAI Assistant")
