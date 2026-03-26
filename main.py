@@ -61,15 +61,19 @@ CONFIG_FILE   = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
 SESSIONS_FILE = os.path.join(os.path.expanduser("~"), ".pandai_sessions.json")
 
 ANALYSIS_SYSTEM_PROMPT = (
-    "You are a real-time conversation intelligence assistant. "
-    "The user has selected a piece of transcript to analyze.\n"
-    "Provide:\n"
-    "1. A concise depth analysis (2-4 sentences) of what is being discussed\n"
-    "2. Connected topics — 2-4 adjacent concepts or ideas that relate to this, "
-    "even if not explicitly mentioned in the conversation\n"
-    "3. 2-3 smart follow-up questions the user could raise to go deeper\n\n"
+    "You are a real-time conversation assistant helping someone during a live conversation. "
+    "The user highlights text from the transcript to get immediate, actionable help.\n\n"
+    "Read the selected text and the full context, then decide what kind of help is needed:\n"
+    "- If the selection is a QUESTION or prompt aimed at the user "
+    "(e.g. 'tell me about a time when', 'what is your biggest weakness', 'walk me through') "
+    "→ write a strong, ready-to-say answer they can use RIGHT NOW, drawing on any context from the briefing or transcript\n"
+    "- If the selection is a TOPIC or statement being discussed "
+    "→ give 2-3 tight talking points to expand on it confidently\n"
+    "- If the selection is a REQUEST or next step "
+    "→ give a concrete, direct response they can deliver\n\n"
+    "Be brief and direct. No meta-commentary. Write as if coaching someone in their ear.\n\n"
     "Respond ONLY in JSON:\n"
-    '{"analysis":"...","connected":[{"icon":"...","title":"...","detail":"..."}],"followups":["..."]}'
+    '{"response":"...","connected":[{"icon":"...","title":"...","detail":"..."}],"followups":["..."]}'
 )
 
 HIGHLIGHT_SYSTEM_PROMPT = (
@@ -480,8 +484,8 @@ class ClaudeAnalysisWorker(QThread):
             if self.briefing:
                 user_content = f"Session context: {self.briefing}\n\n{user_content}"
             msg = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=800,
+                model="claude-haiku-4-5-20251001",
+                max_tokens=450,
                 system=ANALYSIS_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             )
@@ -1299,13 +1303,13 @@ class OverlayWindow(QWidget):
         analysis_entry = {
             "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
             "selection": selection,
-            "analysis":  data.get("analysis", ""),
+            "analysis":  data.get("response", ""),
             "connected": data.get("connected", []),
             "followups": data.get("followups", []),
         }
         self._analyses.append(analysis_entry)
 
-        self._set_response_text(data.get("analysis", ""))
+        self._set_response_text(data.get("response", ""))
 
         # Connected topics
         self._clear_layout(self.topics_layout)
