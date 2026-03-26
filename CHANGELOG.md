@@ -1,58 +1,25 @@
 # Changelog
 
-## [Beta 1.0] — Session History, Transcript Mode & Panda Icon
-### Added
-- **Transcript mode** — a new mode that records only the transcript with no AI suggestions, accessible by cycling through modes
-- **Session-based history** — history tab now groups captured points into collapsible sessions (date/time header, point count)
-- **Deep Dive** — select one or more points within a session and click "Deep Dive" to have Claude provide a thorough analysis of the selected topics
-- **Persistent history** — session history is stored in `~/.pandai_history.json` and fully survives app restarts and version updates; sessions from previous runs appear in the History tab on next launch
-- **Panda icon** — app now shows a custom panda face icon in the taskbar and Alt+Tab switcher
-- **Version numbering** — switched to human-readable Beta/1.0 style versioning
+## [2.0] — Complete V2 Overhaul
 
----
+### Redesigned
+- **Apple-inspired UI** — full dark/light design system with layered surfaces, smooth radius, and refined typography throughout
+- **Transcript-first UX** — removed all conversation modes; the app now continuously transcribes and lets you drive analysis on your terms
+- **On-demand analysis** — highlight any text in the transcript and click Analyze to get an immediate, actionable response; questions aimed at you get ready-to-say answers, topics get talking points
+- **Session persistence** — every recording is saved as a named session with full transcript and all analyses; sessions survive restarts and appear in the History tab
+- **Auto-titling** — sessions are automatically titled in the background after recording ends using the conversation content
+- **Background highlighting** — key phrases are extracted every ~12 seconds and highlighted in the transcript to surface what matters
 
-## [2026-03-13] — Themes, Hotkey & UI Polish
 ### Added
-- Light and Dark mode toggle in Settings → Appearance
-- Theme applies live — no restart needed
-- Settings window now also reflects the chosen theme
-- Hotkey status indicator in Settings (shows ✓ Active or error message)
-- Transcription sensitivity description now matches Strict/Permissive labels
+- **Delete sessions** — remove individual sessions from history; deletions are permanent and sync to disk
+- **Connected topics** — each analysis surfaces adjacent concepts related to what was said
+- **Follow-up chips** — suggested follow-up questions appear as clickable chips after each analysis
+- **Briefing field** — prime the AI with context before a call (job description, agenda, names) to get more relevant analysis
+- **Crash logging** — unhandled exceptions write a full traceback to the Desktop for easier diagnosis
 
 ### Fixed
-- Global hotkey (show/hide overlay) now works correctly when launched via pythonw
-- Session briefing placeholder no longer shows confusing "Claude" reference
-- Settings window was always dark regardless of selected theme
-
----
-
-## [2026-03-13] — Batch 1 Features
-### Added
-- **Clipboard copy** — one-click copy button on every suggestion
-- **Global hotkey** — show/hide the overlay without touching the mouse (default: Ctrl+Shift+Space, configurable in Settings)
-- **Session export** — export the full transcript and suggestions as a `.txt` file at the end of a session
-
----
-
-## [2026-03-13] — Auto-Update System
-### Added
-- Background version check on every launch
-- Update banner appears automatically when a new version is available
-- "Update Now" button downloads and installs the update automatically
-- "Restart" button appears after a successful update
-- Updates install via ZIP download — no Git required
-- Dependencies installed automatically as part of each update
-
----
-
-## [2026-03-13] — Foundation
-### Added
-- Opacity slider defaults to 100% on launch
-- CMD window no longer appears when launching via `python main.py` on Windows
-- Stealth mode — hides overlay from screen sharing/recording (Windows 10 2004+)
-- Speaker labels — distinguishes Your voice vs Their voice in the transcript
-- Pre-session briefing — paste context before starting (job description, agenda, etc.)
-- Custom system prompts per mode in Settings
-- Confidence threshold filter — Strict/Permissive slider controls transcription sensitivity
-- Follow-up question tracker — surfaces things to revisit from the conversation
-- Session history tab — browse previous suggestions from this session
+- Analysis speed improved significantly by switching to Haiku for on-demand responses
+- Session expand no longer crashes on long transcript text
+- Window correctly positions on multi-monitor setups
+- Crash log path now resolves correctly when Desktop is on OneDrive
+- Background workers (highlight, title) no longer cause mid-session segfaults
