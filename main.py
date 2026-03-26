@@ -76,13 +76,6 @@ ANALYSIS_SYSTEM_PROMPT = (
     '{"response":"...","connected":[{"icon":"...","title":"...","detail":"..."}],"followups":["..."]}'
 )
 
-HIGHLIGHT_SYSTEM_PROMPT = (
-    "Extract the 3-8 most important, substantive phrases from this conversation transcript. "
-    "Focus on specific topics, technical terms, names, decisions, or key concepts. "
-    "Ignore small talk, filler words, and simple greetings. "
-    "Return ONLY a JSON array of short phrase strings (2-6 words each), "
-    'e.g.: ["API rate limiting", "pricing model", "Q3 deadline"]'
-)
 
 # ── CONFIG PERSISTENCE ───────────────────────────────────────────────────────
 def load_config():
@@ -500,34 +493,6 @@ class ClaudeAnalysisWorker(QThread):
 
 
 # ── HIGHLIGHT WORKER ──────────────────────────────────────────────────────────
-class HighlightWorker(QThread):
-    """Background pass every ~12s — extracts key phrases to highlight in transcript."""
-    phrases_ready = pyqtSignal(list)
-
-    def __init__(self, api_key, transcript):
-        super().__init__()
-        self.api_key    = api_key
-        self.transcript = transcript
-
-    def run(self):
-        if not self.api_key or len(self.transcript.strip().split()) < 15:
-            return
-        try:
-            client = anthropic.Anthropic(api_key=self.api_key)
-            msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=200,
-                system=HIGHLIGHT_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": f'Transcript:\n"{self.transcript[-1000:]}"'}],
-            )
-            raw = msg.content[0].text.strip()
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            phrases = json.loads(raw)
-            if isinstance(phrases, list):
-                self.phrases_ready.emit([p for p in phrases if isinstance(p, str)])
-        except Exception:
-            pass  # highlights are best-effort, never block the UI
-
 
 # ── SESSION TITLE WORKER ──────────────────────────────────────────────────────
 class SessionTitleWorker(QThread):
@@ -932,7 +897,6 @@ class OverlayWindow(QWidget):
         # Selection & analysis
         self._current_selection      = ""     # text user has selected
         self._pending_display_update = False  # freeze transcript updates during selection
-        self._highlight_phrases      = set()  # currently highlighted phrases
         # Session tracking
         self._current_session  = None   # dict for the in-progress session
         self._session_start    = None   # datetime when recording started
@@ -1349,84 +1313,17 @@ class OverlayWindow(QWidget):
             self.followups_label.hide()
             self.followups_frame.hide()
 
-    # ── HIGHLIGHT ENGINE ──────────────────────────────────────────────────────
-    def _schedule_highlight_pass(self):
-        if not hasattr(self, '_highlight_pass_timer'):
-            self._highlight_pass_timer = QTimer()
-            self._highlight_pass_timer.timeout.connect(self._run_highlight_pass)
-        if not self._highlight_pass_timer.isActive():
-            self._highlight_pass_timer.start(12000)  # every 12s
-
-    def _stop_highlight_timer(self):
-        if hasattr(self, '_highlight_pass_timer'):
-            self._highlight_pass_timer.stop()
-
-    def _run_highlight_pass(self):
-        api_key = self.config.get("api_key", "")
-        if not api_key or not self.full_transcript.strip():
-            return
-        worker = HighlightWorker(api_key, self.full_transcript)
-        worker.phrases_ready.connect(self._apply_highlights)
-        self.claude_q.append(worker)
-        worker.finished.connect(lambda: self.claude_q.remove(worker) if worker in self.claude_q else None)
-        worker.start()
-
-    def _apply_highlights(self, phrases: list):
-        """Highlight key phrases without disturbing any active selection."""
-        self._highlight_phrases = set(phrases)
-        if self._pending_display_update:
-            return
-
-        doc = self.transcript_box.document()
-        saved_cursor = self.transcript_box.textCursor()
-        saved_anchor = saved_cursor.anchor()
-        saved_pos    = saved_cursor.position()
-
-        # Clear existing highlights
-        full_c = QTextCursor(doc)
-        full_c.select(QTextCursor.SelectionType.Document)
-        clear_fmt = QTextCharFormat()
-        clear_fmt.setBackground(QColor(0, 0, 0, 0))
-        full_c.mergeCharFormat(clear_fmt)
-
-        # Apply new highlights
-        d = (self._theme != "light")
-        hl_fmt = QTextCharFormat()
-        hl_fmt.setBackground(QColor(0, 199, 255, 38) if d else QColor(0, 122, 255, 28))
-
-        text = self.transcript_box.toPlainText()
-        for phrase in phrases:
-            start = 0
-            while True:
-                idx = text.lower().find(phrase.lower(), start)
-                if idx == -1:
-                    break
-                c = QTextCursor(doc)
-                c.setPosition(idx)
-                c.setPosition(idx + len(phrase), QTextCursor.MoveMode.KeepAnchor)
-                c.mergeCharFormat(hl_fmt)
-                start = idx + 1
-
-        # Restore selection
-        restored = self.transcript_box.textCursor()
-        restored.setPosition(saved_anchor)
-        restored.setPosition(saved_pos, QTextCursor.MoveMode.KeepAnchor)
-        self.transcript_box.setTextCursor(restored)
-
     def _flush_transcript_display(self):
         """Apply any buffered transcript update after user clears selection."""
         self.transcript_box.setPlainText(self._display_transcript.strip()[-2000:])
         cursor = self.transcript_box.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self.transcript_box.setTextCursor(cursor)
-        if self._highlight_phrases:
-            self._apply_highlights(list(self._highlight_phrases))
 
     # ── SESSION LIFECYCLE ─────────────────────────────────────────────────────
     def _start_session(self):
         self._session_start = datetime.datetime.now()
         self._analyses = []
-        self._highlight_phrases = set()
         self._current_session = {
             "id":               str(uuid.uuid4()),
             "title":            self._session_start.strftime("Session %b %d, %Y  %H:%M"),
@@ -1446,7 +1343,6 @@ class OverlayWindow(QWidget):
             "transcript":       self._display_transcript.strip(),
             "analyses":         self._analyses,
         })
-        self._stop_highlight_timer()
         if self._display_transcript.strip():
             sessions = load_sessions()
             sessions.append(self._current_session)
@@ -2127,6 +2023,9 @@ class OverlayWindow(QWidget):
         capture_mode = self.config.get("capture_mode", "both")
         mic_idx = self.config.get("mic_device") if capture_mode != "inbound" else None
         sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
+        if self.capture:
+            try: self.capture.stop()
+            except Exception: pass
         self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
         self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
         self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
@@ -2138,7 +2037,7 @@ class OverlayWindow(QWidget):
         self.transcript_box.setPlaceholderText("Listening — updating every 2s...")
 
     def _on_audio_chunk(self, audio: np.ndarray, source: str = "mic"):
-        if not self.whisper:
+        if not self.whisper or not self.capture:
             return
         # Allow one worker per source to run concurrently
         running_sources = [w.source for w in self.transcribe_q]
@@ -2220,11 +2119,6 @@ class OverlayWindow(QWidget):
             cursor = self.transcript_box.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
             self.transcript_box.setTextCursor(cursor)
-            if self._highlight_phrases:
-                self._apply_highlights(list(self._highlight_phrases))
-
-        # Keep highlight timer ticking while speech is coming in
-        self._schedule_highlight_pass()
 
     def _set_response_text(self, text, error=False, thinking=False):
         self._clear_layout(self.response_layout)
@@ -2348,10 +2242,8 @@ class OverlayWindow(QWidget):
         self._current_session = None
         self._session_start = None
         self._analyses = []
-        self._highlight_phrases = set()
         self._current_selection = ""
         self._pending_display_update = False
-        self._stop_highlight_timer()
 
         # Cancel any in-flight workers
         for w in self.transcribe_q:
