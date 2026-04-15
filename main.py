@@ -59,6 +59,7 @@ WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
 CONFIG_FILE   = os.path.join(os.path.expanduser("~"), ".pandai_assistant.json")
 SESSIONS_FILE = os.path.join(os.path.expanduser("~"), ".pandai_sessions.json")
+CLAUDE_MODEL  = "claude-haiku-4-5-20251001"
 
 ANALYSIS_SYSTEM_PROMPT = (
     "You are a real-time conversation assistant helping someone during a live conversation. "
@@ -129,7 +130,7 @@ def _add_cuda_dll_paths():
     but doesn't add them to PATH. We find and add them manually so
     ctranslate2/faster-whisper can locate cublas64_12.dll etc.
     """
-    import site, os
+    import site
     added = []
     for sp in site.getsitepackages():
         nvidia_root = os.path.join(sp, "nvidia")
@@ -185,8 +186,6 @@ class WhisperLoader(QThread):
             self.done.emit(model, msg)
         except Exception as e:
             self.done.emit(None, str(e))
-        except Exception as e2:
-            self.done.emit(None, str(e2))
 
 # ── UPDATE CHECKER ───────────────────────────────────────────────────────────
 class UpdateChecker(QThread):
@@ -477,7 +476,7 @@ class ClaudeAnalysisWorker(QThread):
             if self.briefing:
                 user_content = f"Session context: {self.briefing}\n\n{user_content}"
             msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=CLAUDE_MODEL,
                 max_tokens=450,
                 system=ANALYSIS_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
@@ -491,8 +490,6 @@ class ClaudeAnalysisWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
-# ── HIGHLIGHT WORKER ──────────────────────────────────────────────────────────
 
 # ── SESSION TITLE WORKER ──────────────────────────────────────────────────────
 class SessionTitleWorker(QThread):
@@ -513,7 +510,7 @@ class SessionTitleWorker(QThread):
             ctx = (f"Briefing: {self.briefing}\n" if self.briefing else "")
             ctx += f"Transcript excerpt:\n{self.transcript[:600]}"
             msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=CLAUDE_MODEL,
                 max_tokens=30,
                 system="Generate a short (4-7 word) title for this conversation session. Return ONLY the title, no quotes or punctuation.",
                 messages=[{"role": "user", "content": ctx}],
@@ -847,7 +844,7 @@ class SettingsDialog(QDialog):
         def _fetch():
             try:
                 import urllib.request
-                url = "https://raw.githubusercontent.com/AHappyPandaaa/pandai-assistant/main/CHANGELOG.md"
+                url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/CHANGELOG.md"
                 with urllib.request.urlopen(url, timeout=5) as r:
                     return r.read().decode("utf-8")
             except Exception:
@@ -1257,11 +1254,9 @@ class OverlayWindow(QWidget):
         )
         worker.result.connect(lambda d: self._render_analysis(d, selection))
         worker.error.connect(lambda e: self._set_response_text(f"⚠ {e}", error=True))
-        self.claude_q.append(worker)
-        worker.finished.connect(lambda: self.claude_q.remove(worker) if worker in self.claude_q else None)
         preview = selection[:50] + ("…" if len(selection) > 50 else "")
         self._set_response_text(f"Analyzing \"{preview}\"…", thinking=True)
-        worker.start()
+        self._start_worker(worker, self.claude_q)
 
     def _render_analysis(self, data: dict, selection: str):
         analysis_entry = {
@@ -1315,7 +1310,7 @@ class OverlayWindow(QWidget):
 
     def _flush_transcript_display(self):
         """Apply any buffered transcript update after user clears selection."""
-        self.transcript_box.setPlainText(self._display_transcript.strip()[-2000:])
+        self.transcript_box.setPlainText(self._display_transcript.strip())
         cursor = self.transcript_box.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self.transcript_box.setTextCursor(cursor)
@@ -1354,9 +1349,7 @@ class OverlayWindow(QWidget):
                 sid = self._current_session["id"]
                 tw = SessionTitleWorker(api_key, self.full_transcript, self._briefing)
                 tw.title_ready.connect(lambda t: self._update_session_title(sid, t))
-                self.claude_q.append(tw)
-                tw.finished.connect(lambda: self.claude_q.remove(tw) if tw in self.claude_q else None)
-                tw.start()
+                self._start_worker(tw, self.claude_q)
         self._current_session = None
         self._session_start   = None
 
@@ -1398,16 +1391,10 @@ class OverlayWindow(QWidget):
         sessions = load_sessions()
         sessions = [s for s in sessions if s.get("id") != session_id]
         save_sessions(sessions)
-        # Remove the card from the layout and delete the widget
         self.sessions_layout.removeWidget(card_widget)
         card_widget.deleteLater()
-        # If no sessions left, show placeholder
-        remaining = [
-            self.sessions_layout.itemAt(i).widget()
-            for i in range(self.sessions_layout.count())
-            if self.sessions_layout.itemAt(i).widget()
-        ]
-        if not remaining:
+        # count() == 1 means only the stretch spacer remains
+        if self.sessions_layout.count() <= 1:
             self.sessions_layout.insertWidget(0, self._make_sessions_placeholder())
 
     def _make_session_card(self, session: dict):
@@ -1857,9 +1844,6 @@ class OverlayWindow(QWidget):
             }}
         """)
 
-    # ── DEVICES ───────────────────────────────────────────────────────────────
-
-
     # ── WHISPER LOADING ───────────────────────────────────────────────────────
     def _load_whisper(self):
         self.loader = WhisperLoader()
@@ -1926,7 +1910,7 @@ class OverlayWindow(QWidget):
         self.claude_q.clear()
 
         # Stop any background utility threads
-        for attr in ("_update_checker", "_auto_updater", "_whisper_loader"):
+        for attr in ("_update_checker", "_auto_updater", "loader"):
             t = getattr(self, attr, None)
             if t and t.isRunning():
                 t.quit()
@@ -1952,6 +1936,20 @@ class OverlayWindow(QWidget):
             self._apply_styles()
 
     # ── RECORDING ─────────────────────────────────────────────────────────────
+    def _start_worker(self, worker, queue):
+        """Track a QThread in queue so it isn't GC'd, then start it."""
+        queue.append(worker)
+        worker.finished.connect(lambda: queue.remove(worker) if worker in queue else None)
+        worker.start()
+
+    def _create_capture(self, mic_idx, sys_idx):
+        """Create, wire, and start a fresh AudioCapture."""
+        self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
+        self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
+        self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
+        self.capture.level_changed.connect(self.level_meter.set_level)
+        self.capture.start()
+
     def _toggle_recording(self):
         if self.capture:
             self._stop_recording()
@@ -1970,12 +1968,7 @@ class OverlayWindow(QWidget):
         capture_mode = self.config.get("capture_mode", "both")
         mic_idx = self.config.get("mic_device") if capture_mode != "inbound" else None
         sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
-
-        self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
-        self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
-        self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
-        self.capture.level_changed.connect(self.level_meter.set_level)
-        self.capture.start()
+        self._create_capture(mic_idx, sys_idx)
 
         self.rec_btn.setText("■  Stop Listening")
         self.rec_btn.setProperty("recording", True)
@@ -2020,17 +2013,13 @@ class OverlayWindow(QWidget):
 
     def _resume_recording(self):
         self._paused = False
-        capture_mode = self.config.get("capture_mode", "both")
-        mic_idx = self.config.get("mic_device") if capture_mode != "inbound" else None
-        sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
         if self.capture:
             try: self.capture.stop()
             except Exception: pass
-        self.capture = AudioCapture(mic_idx=mic_idx, sys_idx=sys_idx)
-        self.capture.mic_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "mic"))
-        self.capture.sys_chunk_ready.connect(lambda a: self._on_audio_chunk(a, "sys"))
-        self.capture.level_changed.connect(self.level_meter.set_level)
-        self.capture.start()
+        capture_mode = self.config.get("capture_mode", "both")
+        mic_idx = self.config.get("mic_device") if capture_mode != "inbound" else None
+        sys_idx = self.config.get("sys_device") if capture_mode != "mic" else None
+        self._create_capture(mic_idx, sys_idx)
         self.pause_btn.setText("⏸  Pause")
         self.status_dot.setObjectName("dot_active")
         self.status_dot.setStyle(self.status_dot.style())
@@ -2047,9 +2036,7 @@ class OverlayWindow(QWidget):
         no_speech_thresh = round(0.9 - (sensitivity / 10) * 0.6, 2)
         worker = TranscribeWorker(self.whisper, audio, source=source, no_speech_thresh=no_speech_thresh)
         worker.result.connect(self._on_transcription)
-        self.transcribe_q.append(worker)
-        worker.finished.connect(lambda: self.transcribe_q.remove(worker) if worker in self.transcribe_q else None)
-        worker.start()
+        self._start_worker(worker, self.transcribe_q)
 
     def _on_transcription(self, text: str, source: str = "mic"):
         text = text.strip()
@@ -2115,7 +2102,7 @@ class OverlayWindow(QWidget):
 
         # Update display (freeze if user has active selection)
         if not self._pending_display_update:
-            self.transcript_box.setPlainText(self._display_transcript.strip()[-2000:])
+            self.transcript_box.setPlainText(self._display_transcript.strip())
             cursor = self.transcript_box.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
             self.transcript_box.setTextCursor(cursor)
@@ -2135,40 +2122,48 @@ class OverlayWindow(QWidget):
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setFont(QFont("Segoe UI", 10))
+
         if error:
             lbl.setStyleSheet(f"color: {err_col}; font-style: italic;")
-        elif thinking:
-            lbl.setStyleSheet(f"color: {think_col}; font-style: italic;")
-        else:
-            lbl.setStyleSheet(f"color: {resp_col};")
             self.response_layout.addWidget(lbl)
-            copy_btn = QPushButton("Copy")
-            copy_btn.setFont(QFont("Segoe UI", 9))
-            copy_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    border: 1px solid {copy_br};
-                    border-radius: 10px; color: {copy_c};
-                    padding: 3px 12px; max-width: 70px; font-size: 9pt;
-                }}
-                QPushButton:hover {{ border-color: {copy_hov_br}; color: {copy_hov_c}; }}
-            """)
-            def _do_copy(btn=copy_btn, t=text, _br=copy_br, _c=copy_c, _hbr=copy_hov_br, _hc=copy_hov_c):
-                QApplication.clipboard().setText(t)
-                btn.setText("✓ Copied!")
-                btn.setStyleSheet(f"QPushButton {{ background: transparent; border: 1px solid rgba(52,199,89,0.5); border-radius: 10px; color: #34C759; padding: 3px 12px; max-width: 70px; font-size: 9pt; }}")
-                QTimer.singleShot(1500, lambda: btn.setStyleSheet(f"""
+            return
+
+        if thinking:
+            lbl.setStyleSheet(f"color: {think_col}; font-style: italic;")
+            self.response_layout.addWidget(lbl)
+            return
+
+        # Normal response — add text + copy button
+        lbl.setStyleSheet(f"color: {resp_col};")
+        self.response_layout.addWidget(lbl)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setFont(QFont("Segoe UI", 9))
+        copy_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid {copy_br};
+                border-radius: 10px; color: {copy_c};
+                padding: 3px 12px; max-width: 70px; font-size: 9pt;
+            }}
+            QPushButton:hover {{ border-color: {copy_hov_br}; color: {copy_hov_c}; }}
+        """)
+        def _do_copy(btn=copy_btn, t=text, _br=copy_br, _c=copy_c, _hbr=copy_hov_br, _hc=copy_hov_c):
+            QApplication.clipboard().setText(t)
+            btn.setText("✓ Copied!")
+            btn.setStyleSheet(f"QPushButton {{ background: transparent; border: 1px solid rgba(52,199,89,0.5); border-radius: 10px; color: #34C759; padding: 3px 12px; max-width: 70px; font-size: 9pt; }}")
+            def _reset():
+                btn.setText("Copy")
+                btn.setStyleSheet(f"""
                     QPushButton {{
                         background: transparent; border: 1px solid {_br};
                         border-radius: 10px; color: {_c};
                         padding: 3px 12px; max-width: 70px; font-size: 9pt;
                     }}
                     QPushButton:hover {{ border-color: {_hbr}; color: {_hc}; }}
-                """) or btn.setText("Copy"))
-            copy_btn.clicked.connect(_do_copy)
-            self.response_layout.addWidget(copy_btn)
-            return
-        self.response_layout.addWidget(lbl)
+                """)
+            QTimer.singleShot(1500, _reset)
+        copy_btn.clicked.connect(_do_copy)
+        self.response_layout.addWidget(copy_btn)
 
     def _make_topic_card(self, topic: dict):
         d = (self._theme != "light")
@@ -2245,14 +2240,12 @@ class OverlayWindow(QWidget):
         self._current_selection = ""
         self._pending_display_update = False
 
-        # Cancel any in-flight workers
-        for w in self.transcribe_q:
-            try: w.terminate()
-            except Exception: pass
+        # Cancel any in-flight workers (quit() is safe; terminate() can corrupt C++ state)
+        for w in list(self.transcribe_q):
+            w.quit(); w.wait(500)
         self.transcribe_q.clear()
-        for w in self.claude_q:
-            try: w.terminate()
-            except Exception: pass
+        for w in list(self.claude_q):
+            w.quit(); w.wait(500)
         self.claude_q.clear()
 
         # Reset UI
@@ -2272,9 +2265,6 @@ class OverlayWindow(QWidget):
         self._clear_layout(self.followups_layout)
         self.followups_label.hide()
         self.followups_frame.hide()
-
-        # Refresh sessions tab
-        self._load_sessions_into_tab()
 
         # Restart recording if it was running
         if was_recording:
@@ -2466,7 +2456,7 @@ def _relaunch_as_admin():
     return ret > 32  # > 32 = success; <= 32 = denied or error
 
 def _write_crash_log(exc_type, exc_value, exc_tb):
-    import traceback, datetime
+    import traceback
     log_path = os.path.join(_get_desktop_path(), "pandai_assistant_crash.txt")
     lines = traceback.format_exception(exc_type, exc_value, exc_tb)
     msg = f"[{datetime.datetime.now()}]\n{''.join(lines)}\n"
@@ -2509,11 +2499,9 @@ if __name__ == "__main__":
     try:
         import faulthandler
         _fault_log = os.path.join(_get_desktop_path(), "pandai_assistant_crash.txt")
-        _fault_file = open(_fault_log, "a")
-        faulthandler.enable(file=_fault_file, all_threads=True)
+        faulthandler.enable(file=open(_fault_log, "a"), all_threads=True)
     except Exception:
         try:
-            import faulthandler
             if sys.stderr is not None:
                 faulthandler.enable()
         except Exception:
